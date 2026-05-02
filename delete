@@ -119,3 +119,7 @@ if localPlayer then
 else
     warn("Optimization failed for GUI: LocalPlayer not found (Make sure this runs locally).")
 end
+
+task.wait(30)
+game:GetService("RunService"):Set3dRenderingEnabled(false)
+setfpscap(15)
