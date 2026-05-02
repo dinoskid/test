@@ -1,0 +1,1482 @@
+-- Garden Bee Flyer v32 - EVENTS AUTO-ON + SNOWFLAKE + METEOREON PICKUPS
+-- Arcade + Eggs + Ghost + Snowflake + Meteoron + Taco Farm + Spring Event + Playtime Rewards
+-- ⭐ ALL EVENTS AUTO-ENABLED ON LOGIN (except Spins)
+-- ⭐ AUTO-DISABLES FLY MODE WHEN ARCADE EVENT ENDS (prevents ghost bugs)
+-- ⭐ DEDICATED FLY-OFF LOOP (ensures fly turns off even if event detection misses the change)
+-- Inject via executor
+
+-- ========== FIX: Wait for LocalPlayer and Character before proceeding ==========
+local Players = game:GetService("Players")
+
+-- Wait until LocalPlayer exists
+local player
+repeat
+    task.wait(10)
+    player = Players.LocalPlayer
+until player
+
+-- Wait for Character to load (or wait for CharacterAdded event)
+local character = player.Character
+if not character then
+    character = player.CharacterAdded:Wait()
+end
+
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Now continue with the rest of the script...
+-- ==============================================================================
+
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local CONFIG = {
+    FlySpeed     = 32,
+    HoverHeight  = 1,
+    ItemCooldown = 1.5,
+}
+
+local MIN_Y        = 0
+local GHOST_MIN_Y  = -5
+local SWATTER_TYPE = "Swatter" -- change to "HeartbreakerSlapper" if needed
+
+-- ============================================================
+-- TICKET CAP
+-- ============================================================
+local MAX_TICKETS      = 15
+local ticketsCollected = 0
+local ticketCapReached = false
+
+local function resetTicketState()
+    ticketsCollected = 0
+    ticketCapReached = false
+    MAX_TICKETS      = 15
+    if logFn  then logFn("[Ticket] State reset. Cap: " .. MAX_TICKETS, "info") end
+    if debugFn then debugFn("[DBG] Ticket cap reset.", "info") end
+end
+
+-- ============================================================
+-- ENABLED FEATURES
+-- ============================================================
+local ENABLED = {
+    arcade           = true,
+    eggs             = true,
+    ghost            = true,
+    taco             = true,
+    springEvent      = true,
+    playtimeRewards  = false,
+    arcadeRoll       = false,
+    dailySpin        = false,
+}
+
+-- ============================================================
+-- AUTO ROLL STATE
+-- ============================================================
+local arcadeRollActive = false
+local springEventExecutionCount = 0
+local springEventLastExecution = 0
+local SPRING_EVENT_COOLDOWN = 1200 -- 20 minutes
+
+-- ============================================================
+-- TACO FARM STATE
+-- ============================================================
+local tacoLoopActive = false
+local tacoCurrentIndex = 0
+local tacoCollected = 0
+
+-- ============================================================
+-- PLAYTIME REWARDS STATE
+-- ============================================================
+local playtimeRewardIndex = 1
+local playtimeRewardCollected = 0
+
+-- ============================================================
+-- DAILY SPIN STATE
+-- ============================================================
+local dailySpinCount = 0
+
+-- ============================================================
+-- ITEM NAMES
+-- ============================================================
+local ORB_NAMES = { ArcadeOrb = true, OrbSpecial = true, Orb = true }
+
+-- ============================================================
+-- CANDY REFERENCE
+-- ============================================================
+local candyRef = ReplicatedStorage
+    :WaitForChild("Storage")
+    :WaitForChild("Materials")
+    :WaitForChild("Candy")
+
+local function getCandyCount()
+    local val = candyRef:FindFirstChildWhichIsA("IntValue")
+        or candyRef:FindFirstChildWhichIsA("NumberValue")
+    return val and val.Value or 0
+end
+
+-- ============================================================
+-- HONEYPOT GUARD
+-- ============================================================
+local function isHoneypot(obj)
+    local n = obj.Name
+    return n:find("Honeypot") ~= nil or n:find("_HoneyPot") ~= nil
+end
+
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function getBasePart(obj)
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return nil
+end
+
+local function getPrompt(obj)
+    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not prompt and obj.Parent then
+        prompt = obj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+    end
+    return prompt
+end
+
+local function firePrompt(prompt, holdDuration)
+    local ok = pcall(fireproximityprompt, prompt, holdDuration or 0)
+    if not ok then
+        pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(holdDuration or 0)
+            prompt:InputHoldEnd()
+        end)
+    end
+end
+
+local function teleportTo(pos)
+    local noclipConn = RunService.Stepped:Connect(function()
+        for _, p in ipairs(character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end)
+    rootPart.CFrame = CFrame.new(pos)
+    task.wait(0.05)
+    noclipConn:Disconnect()
+end
+
+local function jitter(base, range)
+    return base + math.random() * range
+end
+
+-- ============================================================
+-- EVENT DETECTION
+-- ============================================================
+local function getActiveEvent()
+    local evFolder = workspace:FindFirstChild("Events")
+    if evFolder then
+        if evFolder:FindFirstChild("Arcade") or evFolder:FindFirstChild("ArcadeSpheres") then
+            return "arcade"
+        end
+    end
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and string.match(obj.Name, "^FastGhost_%d+$") then
+            return "ghost"
+        end
+    end
+    return nil
+end
+
+-- ============================================================
+-- GHOST REMOTES
+-- ============================================================
+local evRemotes     = ReplicatedStorage:WaitForChild("Events")
+local equipRemote   = evRemotes:WaitForChild("EquipItem")
+local swatterRemote = evRemotes:WaitForChild("Swatter")
+
+-- ============================================================
+-- FLY SYSTEM (manual WASD only)
+-- ============================================================
+local flying = false
+local bv, bg
+local logFn   -- forward-declared
+local debugFn -- forward-declared
+
+local function setNoclip(on)
+    if on then
+        RunService.Stepped:Connect(function()
+            for _, p in ipairs(character:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end)
+    end
+end
+
+local function stopFly()
+    flying = false
+    if bv then bv:Destroy(); bv = nil end
+    if bg then bg:Destroy(); bg = nil end
+    pcall(function()
+        humanoid.PlatformStand = false
+        humanoid.AutoRotate    = true
+    end)
+end
+
+local function startFly()
+    stopFly()
+    flying = true
+    humanoid.PlatformStand = true
+    humanoid.AutoRotate    = false
+    setNoclip(true)
+
+    bv           = Instance.new("BodyVelocity")
+    bv.MaxForce  = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity  = Vector3.zero
+    bv.Parent    = rootPart
+
+    bg           = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.P         = 1e4
+    bg.CFrame    = rootPart.CFrame
+    bg.Parent    = rootPart
+end
+
+UserInputService.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.KeyCode == Enum.KeyCode.F then
+        if flying then
+            stopFly()
+            if logFn then logFn("[Fly] OFF", "warn") end
+        else
+            startFly()
+            if logFn then logFn("[Fly] ON — WASD to move", "fly") end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not flying or not bv or not bg then return end
+    local cam = workspace.CurrentCamera
+    local dir = Vector3.zero
+    if UserInputService:IsKeyDown(Enum.KeyCode.W)         then dir += cam.CFrame.LookVector  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S)         then dir -= cam.CFrame.LookVector  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A)         then dir -= cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D)         then dir += cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space)     then dir += Vector3.new(0, 1, 0)  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= Vector3.new(0, 1, 0)  end
+    if dir.Magnitude > 0 then
+        bv.Velocity = dir.Unit * CONFIG.FlySpeed
+        bg.CFrame   = CFrame.new(Vector3.zero, dir)
+    else
+        bv.Velocity = Vector3.zero
+    end
+end)
+
+-- ============================================================
+-- FLAGS
+-- ============================================================
+local collecting       = false
+local collectingTicket = false
+local loopActive       = false
+local lastEvent        = nil
+local arcadeGodActive  = false
+
+-- ============================================================
+-- ARCADE GOD MODE
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if arcadeGodActive and humanoid and humanoid.Parent then
+            pcall(function()
+                -- Refill health
+                humanoid.Health = humanoid.MaxHealth
+                -- Prevent break joints
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                -- Re-enable after a moment to avoid softlock
+                task.defer(function()
+                    if humanoid then
+                        humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+                    end
+                end)
+            end)
+        end
+    end
+end)
+
+-- ============================================================
+-- GHOST STATE
+-- ============================================================
+local ghostLoopRunning = false
+local ghostHeartbeat   = nil
+local ghostFlySpeed    = 70
+local chaseDistance    = 3.2
+local dodgeDistance    = 5
+local hitCooldown      = 0.05
+local ghostTarget      = nil
+local ghostHitting     = false
+local ghostHitStart    = 0
+local lastHitTime      = 0
+local lastReequipTime  = 0
+local candyChecking    = false
+
+local ghostRayParams = RaycastParams.new()
+ghostRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- ============================================================
+-- TICKET COLLECT
+-- ============================================================
+local function flyToTicket(part, prompt)
+    if not part or not part.Parent then
+        if debugFn then debugFn("[WARN] flyToTicket: part nil", "warn") end
+        return false
+    end
+    if ticketCapReached then
+        if logFn then logFn("[Ticket] Cap reached (" .. MAX_TICKETS .. "). Skipping.", "warn") end
+        return false
+    end
+    if collectingTicket then
+        if debugFn then debugFn("[DBG] flyToTicket: already collecting, skipping", "warn") end
+        return false
+    end
+
+    collectingTicket = true
+    if not flying then startFly() end
+
+    if logFn then logFn("[Ticket] Teleporting to ticket...", "fly") end
+    teleportTo(part.Position + Vector3.zero)
+
+    if bv then bv.Velocity = Vector3.zero end
+    local settle = jitter(1.5, 1.0)
+    if debugFn then debugFn("[DBG] Settle: " .. string.format("%.2f", settle) .. "s", "info") end
+    task.wait(settle)
+
+    if part and part.Parent and prompt then
+        if logFn then logFn("[Ticket] Collecting ticket...", "fly") end
+        local ok, err = pcall(function() fireproximityprompt(prompt, 0) end)
+        if not ok and debugFn then debugFn("[ERR] fireproximityprompt failed: " .. tostring(err), "err") end
+        local confirm = jitter(1.2, 0.8)
+        if debugFn then debugFn("[DBG] Confirm: " .. string.format("%.2f", confirm) .. "s", "info") end
+        task.wait(confirm)
+
+        ticketsCollected += 1
+        if logFn then logFn("[Ticket] Collected! (" .. ticketsCollected .. "/" .. MAX_TICKETS .. ")", "ok") end
+
+        if ticketsCollected >= MAX_TICKETS then
+            ticketCapReached = true
+            if logFn  then logFn("[Ticket] Run cap reached. Orbs only.", "warn") end
+            if debugFn then debugFn("[DBG] Ticket cap hit at " .. ticketsCollected, "warn") end
+        end
+
+        collectingTicket = false
+        return true
+    else
+        if debugFn then debugFn("[ERR] Ticket part/prompt gone before collect.", "err") end
+    end
+
+    collectingTicket = false
+    return false
+end
+
+-- ============================================================
+-- COLLECT ITEM  (eggs)
+-- ============================================================
+local function collectItem(part, prompt, label, holdDuration)
+    if collecting then return false end
+    if not part or not part.Parent then return false end
+    collecting = true
+    if logFn then logFn("[Collecting] " .. label, "fly") end
+    teleportTo(part.Position + Vector3.zero)
+    task.wait(0.1)
+    if prompt then
+        firePrompt(prompt, holdDuration or 0)
+        task.wait((holdDuration or 0) + 0.2)
+    end
+    task.wait(CONFIG.ItemCooldown)
+    collecting = false
+    return true
+end
+
+-- ============================================================
+-- ARCADE — ORBS
+-- ============================================================
+local function collectOrbs()
+    if collectingTicket then return end
+    local evFolder = workspace:FindFirstChild("Events")
+    if not evFolder then return end
+    for _, container in ipairs({
+        evFolder:FindFirstChild("ArcadeSpheres"),
+        evFolder:FindFirstChild("Arcade"),
+    }) do
+        if container then
+            for _, obj in ipairs(container:GetChildren()) do
+                if collectingTicket then return end
+                if ORB_NAMES[obj.Name] and not isHoneypot(obj) then
+                    local part = getBasePart(obj)
+                    if part and part.Position.Y >= MIN_Y then
+                        teleportTo(part.Position + Vector3.zero)
+                        task.wait(0.05)
+                    end
+                end
+            end
+        end
+    end
+    if logFn then logFn("[Arcade] Orbs collected.", "ok") end
+end
+
+-- ============================================================
+-- ARCADE — TICKETS
+-- ============================================================
+local function findTickets()
+    local tickets = {}
+    local evFolder = workspace:FindFirstChild("Events")
+    if not evFolder then return tickets end
+    for _, container in ipairs(evFolder:GetChildren()) do
+        for _, obj in ipairs(container:GetChildren()) do
+            if obj.Name == "ArcadeTicket" and not isHoneypot(obj) then
+                local part   = getBasePart(obj)
+                local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if not prompt then
+                    local ui = obj:FindFirstChild("UI")
+                    if ui then
+                        prompt = ui:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    end
+                end
+                if part and part.Position.Y >= MIN_Y and prompt then
+                    table.insert(tickets, { part = part, prompt = prompt })
+                end
+            end
+        end
+    end
+    if debugFn then debugFn("[DBG] Tickets found: " .. #tickets, "info") end
+    return tickets
+end
+
+-- ============================================================
+-- ARCADE — MAIN ROUTINE
+-- ============================================================
+local function runArcade()
+    if not ticketCapReached then
+        local tickets = findTickets()
+        for _, t in ipairs(tickets) do
+            if not ENABLED.arcade then break end
+            if ticketCapReached then break end
+            if t.part and t.part.Parent and t.prompt then
+                flyToTicket(t.part, t.prompt)
+                task.wait(jitter(5, 1))
+            end
+        end
+    end
+    collectOrbs()
+    task.wait(0.3)
+end
+
+-- ============================================================
+-- TICKET WATCHER
+-- ============================================================
+local ticketWatcherActive = false
+
+local function startTicketWatcher()
+    if ticketWatcherActive then return end
+    ticketWatcherActive = true
+    task.spawn(function()
+        local seenTickets = {}
+        if debugFn then debugFn("[DBG] Ticket watcher started", "info") end
+
+        while ticketWatcherActive do
+            task.wait(0.5)
+            if not ENABLED.arcade then continue end
+
+            if not ticketCapReached then
+                local tickets = findTickets()
+                for _, t in ipairs(tickets) do
+                    if ticketCapReached then break end
+                    if not seenTickets[t.part] then
+                        seenTickets[t.part] = true
+                        if logFn then logFn("[Watcher] New ticket detected!", "ok") end
+                        flyToTicket(t.part, t.prompt)
+                        task.wait(jitter(5, 1))
+                        collectOrbs()
+                    end
+                end
+
+                for part, _ in pairs(seenTickets) do
+                    if not part or not part.Parent then
+                        seenTickets[part] = nil
+                    end
+                end
+            end
+        end
+
+        ticketWatcherActive = false
+    end)
+end
+
+local function stopTicketWatcher()
+    ticketWatcherActive = false
+end
+
+-- ============================================================
+-- SPAWN PART NAMES
+-- ============================================================
+local SPAWN_PARTS = {
+    ArcadeTicket   = true,
+    LuckyBlockPart = true,
+    MeteorEggPart  = true,
+    SnowyEggPart   = true,
+}
+local FLY_SPEED_COLLECT = 50
+
+-- ============================================================
+-- FLY-TO-TARGET
+-- ============================================================
+local function flyToTarget(part, prompt, label)
+    if not part or not part.Parent then return false end
+    if logFn then logFn("[Spawn] Flying to " .. label, "fly") end
+    if not flying then startFly() end
+
+    local timeout = 10
+    local started = tick()
+
+    while tick() - started < timeout do
+        if not part or not part.Parent then
+            if logFn then logFn("[Spawn] " .. label .. " gone.", "warn") end
+            return false
+        end
+
+        local goal = part.Position + Vector3.zero
+        local dir  = goal - rootPart.Position
+        local dist = dir.Magnitude
+
+        if dist <= 4 then
+            if bv then bv.Velocity = Vector3.zero end
+            break
+        end
+
+        if bv and bg then
+            bv.Velocity = dir.Unit * FLY_SPEED_COLLECT
+            bg.CFrame   = CFrame.new(Vector3.zero, dir)
+        end
+
+        task.wait(0.05)
+    end
+
+    if part and part.Parent then
+        if prompt then
+            if logFn then logFn("[Spawn] Firing prompt on " .. label, "fly") end
+            task.wait(jitter(1.5, 1.0))
+            pcall(function() fireproximityprompt(prompt, 0) end)
+            task.wait(jitter(1.2, 0.8))
+        end
+        if logFn then logFn("[Spawn] " .. label .. " collected!", "ok") end
+        return true
+    end
+
+    return false
+end
+
+-- ============================================================
+-- SPAWN PART COLLECTOR
+-- ============================================================
+local spawnCollectorActive = false
+
+local function startSpawnCollector()
+    if spawnCollectorActive then return end
+    spawnCollectorActive = true
+    task.spawn(function()
+        local seen = {}
+
+        while spawnCollectorActive do
+            task.wait(0.5)
+
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if SPAWN_PARTS[obj.Name] and not isHoneypot(obj) and not seen[obj] then
+                    local part   = getBasePart(obj)
+                    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    if not prompt then
+                        local ui = obj:FindFirstChild("UI")
+                        if ui then prompt = ui:FindFirstChildWhichIsA("ProximityPrompt", true) end
+                    end
+                    if part and part.Position.Y >= MIN_Y then
+                        seen[obj] = true
+                        if logFn then logFn("[Spawn] Detected: " .. obj.Name, "ok") end
+                        flyToTarget(part, prompt, obj.Name)
+                    end
+                end
+            end
+
+            for obj, _ in pairs(seen) do
+                if not obj or not obj.Parent then
+                    seen[obj] = nil
+                end
+            end
+        end
+
+        spawnCollectorActive = false
+    end)
+end
+
+local function stopSpawnCollector()
+    spawnCollectorActive = false
+end
+
+-- ============================================================
+-- EGGS
+-- ============================================================
+local function runEggs()
+    local found = 0
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj.Parent == workspace
+            and obj.Name:find("Egg")
+            and not isHoneypot(obj) then
+
+            local part = getBasePart(obj)
+            if part and part.Position.Y >= MIN_Y then
+                local prompt = getPrompt(obj)
+                if prompt then
+                    found += 1
+                    collectItem(part, prompt, "Egg: " .. obj.Name, 0.25)
+                    if not ENABLED.eggs then break end
+                end
+            end
+        end
+    end
+    if found > 0 and debugFn then debugFn("[DBG] Eggs collected this scan: " .. found, "info") end
+end
+
+-- ============================================================
+-- GHOST SYSTEM
+-- Fixed: tries both InvokeServer and FireServer on equip
+-- Fixed: re-equips every 2s if tool got knocked off mid-chase
+-- ============================================================
+local function equipSwatter()
+    -- try backpack first
+    local char = player.Character
+    local hum  = char and char:FindFirstChild("Humanoid")
+    if hum and player:FindFirstChild("Backpack") then
+        local tool = player.Backpack:FindFirstChild(SWATTER_TYPE)
+        if tool then
+            if debugFn then debugFn("[DBG] " .. SWATTER_TYPE .. " in backpack, equipping", "info") end
+            hum:EquipTool(tool)
+            return
+        end
+    end
+    -- try both remotes
+    if debugFn then debugFn("[DBG] " .. SWATTER_TYPE .. " not in backpack, using remotes", "info") end
+    pcall(function() equipRemote:InvokeServer(SWATTER_TYPE, 0) end)
+    pcall(function() equipRemote:FireServer(SWATTER_TYPE, 0) end)
+end
+
+local function isSwatterEquipped()
+    local char = player.Character
+    if not char then return false end
+    local tool = char:FindFirstChildWhichIsA("Tool")
+    return tool ~= nil and tool.Name == SWATTER_TYPE
+end
+
+local function findGhost()
+    local best, bestDist = nil, math.huge
+    for _, obj in pairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and string.match(obj.Name, "^FastGhost_%d+$") then
+            local pivot = obj:GetPivot()
+            if pivot then
+                if pivot.Position.Y < GHOST_MIN_Y then
+                    if debugFn then debugFn("[DBG] Ghost " .. obj.Name .. " underground (Y=" .. string.format("%.1f", pivot.Position.Y) .. "), skipping", "info") end
+                    continue
+                end
+                local dist = (pivot.Position - rootPart.Position).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    best     = obj
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function startGhostLoop()
+    if ghostLoopRunning then return end
+    ghostTarget      = nil
+    ghostHitting     = false
+    candyChecking    = false
+    lastReequipTime  = 0
+
+    -- ghost uses root.Velocity — stop fly to avoid BodyVelocity conflict
+    stopFly()
+    if debugFn then debugFn("[DBG] Ghost loop starting, fly stopped", "info") end
+
+    if logFn then logFn("[Ghost] Equipping " .. SWATTER_TYPE .. "...", "fly") end
+    equipSwatter()
+    task.wait(1)
+
+    ghostLoopRunning = true
+    ghostRayParams.FilterDescendantsInstances = {character}
+
+    ghostHeartbeat = RunService.Heartbeat:Connect(function()
+        if not ghostLoopRunning or not ENABLED.ghost then
+            ghostHitting = false
+            return
+        end
+
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        -- find target if lost
+        if not ghostTarget or not ghostTarget.Parent then
+            ghostTarget  = findGhost()
+            ghostHitting = false
+            if not ghostTarget then
+                root.Velocity = Vector3.zero
+                if logFn then logFn("[Ghost] Waiting for ghost...", "info") end
+                return
+            end
+            if logFn then logFn("[Ghost] Hunting: " .. ghostTarget.Name, "fly") end
+            -- equip on new target found
+            equipSwatter()
+        end
+
+        -- re-check underground mid-chase
+        local pivot = ghostTarget:GetPivot()
+        if pivot and pivot.Position.Y < GHOST_MIN_Y then
+            if debugFn then debugFn("[DBG] Ghost went underground, re-targeting.", "warn") end
+            ghostTarget  = nil
+            ghostHitting = false
+            root.Velocity = Vector3.zero
+            return
+        end
+
+        local currentPos = root.Position
+        local targetPos  = ghostTarget:GetPivot().Position
+        local direction  = (targetPos - currentPos)
+        local distance   = direction.Magnitude
+
+        if distance > 0.1 then direction = direction.Unit
+        else direction = Vector3.zero end
+
+        local moveDir = direction * ghostFlySpeed
+
+        -- obstacle dodge
+        if distance > 0.1 then
+            local result = workspace:Raycast(currentPos, direction * dodgeDistance, ghostRayParams)
+            if result then
+                local right = direction:Cross(Vector3.new(0, 1, 0)).Unit
+                local left  = -right
+                if not workspace:Raycast(currentPos, (direction + left * 0.7).Unit * dodgeDistance, ghostRayParams) then
+                    moveDir = (direction + left * 0.85).Unit * ghostFlySpeed
+                elseif not workspace:Raycast(currentPos, (direction + right * 0.7).Unit * dodgeDistance, ghostRayParams) then
+                    moveDir = (direction + right * 0.85).Unit * ghostFlySpeed
+                else
+                    moveDir = (direction + Vector3.new(0, 0.8, 0)).Unit * ghostFlySpeed
+                end
+            end
+        end
+
+        -- height correction when close
+        if distance < 8 then
+            local heightDiff = currentPos.Y - targetPos.Y
+            if heightDiff > 4 then
+                moveDir = moveDir * 0.6 + Vector3.new(0, -35, 0)
+            end
+        end
+
+        root.Velocity = moveDir
+
+        -- swat when within chase distance
+        if distance <= chaseDistance then
+            if not ghostHitting then
+                ghostHitting  = true
+                ghostHitStart = tick()
+                equipSwatter()
+                if logFn then logFn("[Ghost] Swatting: " .. ghostTarget.Name, "ok") end
+            end
+
+            local now = tick()
+
+            -- re-equip every 2s if swatter got knocked off
+            if now - lastReequipTime >= 2 then
+                lastReequipTime = now
+                if not isSwatterEquipped() then
+                    equipSwatter()
+                    if debugFn then debugFn("[DBG] Re-equipping " .. SWATTER_TYPE .. " mid-swat.", "warn") end
+                end
+            end
+
+            if (now - ghostHitStart) < 120 then
+                if (now - lastHitTime) >= hitCooldown then
+                    lastHitTime = now
+
+                    if not candyChecking then
+                        candyChecking = true
+                        local candyBefore = getCandyCount()
+                        pcall(function() swatterRemote:FireServer() end)
+                        task.spawn(function()
+                            task.wait(1)
+                            local candyAfter = getCandyCount()
+                            if candyAfter > candyBefore then
+                                if logFn  then logFn("[Ghost] Candy obtained! Next ghost in 3s.", "ok") end
+                                if debugFn then debugFn("[DBG] Candy: " .. candyBefore .. " -> " .. candyAfter, "ok") end
+                                ghostHitting = false
+                                ghostTarget  = nil
+                                task.wait(3)
+                            else
+                                if debugFn then debugFn("[DBG] Candy unchanged: " .. candyAfter, "info") end
+                            end
+                            candyChecking = false
+                        end)
+                    else
+                        pcall(function() swatterRemote:FireServer() end)
+                    end
+                end
+            else
+                ghostHitting = false
+                ghostTarget  = nil
+                if logFn  then logFn("[Ghost] 120s limit, re-targeting.", "warn") end
+                if debugFn then debugFn("[DBG] 120s hit timer expired.", "warn") end
+            end
+        else
+            if ghostHitting then
+                ghostHitting = false
+                if logFn then logFn("[Ghost] Chasing: " .. ghostTarget.Name, "fly") end
+            end
+        end
+
+        -- drop correction
+        if root.Position.Y - targetPos.Y > 6 and distance < 5 then
+            root.CFrame = root.CFrame * CFrame.new(0, -1.5, 0)
+        end
+    end)
+
+    if logFn then logFn("[Ghost] Hunt started.", "ok") end
+end
+
+local function stopGhostLoop()
+    ghostLoopRunning = false
+    ghostHitting     = false
+    ghostTarget      = nil
+    candyChecking    = false
+    if ghostHeartbeat then
+        ghostHeartbeat:Disconnect()
+        ghostHeartbeat = nil
+    end
+    if logFn  then logFn("[Ghost] Hunt stopped.", "warn") end
+    if debugFn then debugFn("[DBG] ghostHeartbeat disconnected.", "info") end
+end
+
+-- ============================================================
+-- ARCADE ROLL
+-- ============================================================
+local function runArcadeRoll()
+    if not ENABLED.arcadeRoll or not arcadeRollActive then return end
+    pcall(function()
+        local machinePart = workspace.Core.Scriptable.TouchParts.ArcadeProximityPart
+        local machinePrompt = machinePart:FindFirstChild("ArcadePrompt")
+
+        if machinePart and machinePrompt then
+            local dist = (rootPart.Position - machinePart.Position).Magnitude
+            if dist > 5 then
+                teleportTo(machinePart.Position + Vector3.new(0, 2, 0))
+                task.wait(0.2)
+            end
+            firePrompt(machinePrompt)
+            if debugFn then debugFn("[DBG] Arcade roll executed", "info") end
+        end
+    end)
+end
+
+-- ============================================================
+-- SPRING EVENT AUTO-CLAIM
+-- ============================================================
+local function claimSpringEvent()
+    if not ENABLED.springEvent then return end
+    
+    local now = tick()
+    if now - springEventLastExecution < SPRING_EVENT_COOLDOWN then
+        return
+    end
+    
+    pcall(function()
+        local args = {
+            {
+                Action = "DeliverQuest",
+                QuestIndex = 1
+            }
+        }
+        
+        ReplicatedStorage:WaitForChild("Events"):WaitForChild("SpecialEvent"):FireServer(unpack(args))
+        springEventExecutionCount += 1
+        springEventLastExecution = now
+        
+        if logFn then logFn("[SpringEvent] Claimed! Count: " .. springEventExecutionCount, "ok") end
+        if debugFn then debugFn("[DBG] Spring event claimed. Next in 20 minutes.", "info") end
+    end)
+end
+
+-- ============================================================
+-- TACO FARM
+-- ============================================================
+local function flyToTaco(obj)
+    if not obj or not obj.Parent then return false end
+    
+    local part = getBasePart(obj)
+    if not part then return false end
+    
+    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not prompt then return false end
+    
+    if not flying then startFly() end
+    teleportTo(part.Position + Vector3.zero)
+    task.wait(0.1)
+    firePrompt(prompt, 0)
+    task.wait(0.5)
+    
+    tacoCollected += 1
+    if logFn then logFn("[Taco] Collected! (" .. tacoCollected .. ")", "ok") end
+    return true
+end
+
+local function startTacoLoop()
+    if tacoLoopActive then return end
+    tacoLoopActive = true
+    task.spawn(function()
+        if logFn then logFn("[Taco] Farm started.", "ok") end
+        if debugFn then debugFn("[DBG] Taco loop started (scan mode)", "info") end
+        
+        while tacoLoopActive and ENABLED.taco do
+            local found = 0
+            for _, obj in ipairs(workspace:GetChildren()) do
+                if not tacoLoopActive or not ENABLED.taco then break end
+                if isHoneypot(obj) then continue end
+                
+                -- numeric name = taco
+                local num = tonumber(obj.Name)
+                if not num then continue end
+                
+                local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if not prompt then continue end
+                
+                local part = getBasePart(obj)
+                if not part then
+                    if obj:IsA("BasePart") then part = obj end
+                end
+                if not part then continue end
+                
+                found += 1
+                tacoCurrentIndex = num
+                flyToTaco(obj)
+            end
+            
+            if found == 0 then
+                if debugFn then debugFn("[DBG] No tacos found this scan. Waiting...", "info") end
+                task.wait(2)
+            end
+        end
+        
+        tacoLoopActive = false
+        if logFn then logFn("[Taco] Farm stopped.", "warn") end
+    end)
+end
+
+local function stopTacoLoop()
+    tacoLoopActive = false
+    if logFn then logFn("[Taco] Loop stopped.", "warn") end
+    if debugFn then debugFn("[DBG] Taco loop disconnected.", "info") end
+end
+
+-- ============================================================
+-- PLAYTIME REWARDS COLLECTOR
+-- ============================================================
+local function claimPlaytimeReward()
+    if not ENABLED.playtimeRewards then return end
+    
+    for index = 1, 9 do
+        pcall(function()
+            local args = {
+                {
+                    Action = "ClaimReward",
+                    Index = index
+                }
+            }
+            ReplicatedStorage:WaitForChild("Events"):WaitForChild("PlaytimeRewardsHandler"):FireServer(unpack(args))
+            playtimeRewardCollected += 1
+            playtimeRewardIndex = index
+            
+            if debugFn then debugFn("[DBG] Playtime reward index " .. index .. " claimed.", "info") end
+        end)
+        task.wait(0.3)
+    end
+    
+    if logFn then logFn("[PlaytimeRewards] Batch collected! Total: " .. playtimeRewardCollected, "ok") end
+end
+
+
+-- ============================================================
+-- DAILY SPIN (LOOP - SPINS UNTIL OUT OF TICKETS)
+-- ============================================================
+local dailySpinLoopActive = false
+
+local function runDailySpin()
+    if not ENABLED.dailySpin or not dailySpinLoopActive then return end
+    pcall(function()
+        local args = {
+            "spin",
+            "daily"
+        }
+        ReplicatedStorage:WaitForChild("Events"):WaitForChild("DailySpin"):FireServer(unpack(args))
+        dailySpinCount += 1
+        
+        if logFn then logFn("[DailySpin] Spun! Count: " .. dailySpinCount, "ok") end
+        if debugFn then debugFn("[DBG] Daily spin #" .. dailySpinCount, "info") end
+    end)
+end
+
+-- ============================================================
+-- CONSOLIDATED NOCLIP ENFORCER (OPTIMIZED)
+-- ============================================================
+RunService.Stepped:Connect(function()
+    if not character or not humanoid or not humanoid.Parent then return end
+    
+    -- Only enforce noclip when needed (arcade, ghost, or flying)
+    if arcadeGodActive or ghostLoopRunning or flying then
+        for _, p in ipairs(character:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- MAIN LOOP - ⭐ AUTO-DISABLE FLY WHEN ARCADE ENDS
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if loopActive then continue end
+
+        local activeEvent = getActiveEvent()
+
+        if activeEvent == "arcade" and lastEvent ~= "arcade" then
+            resetTicketState()
+            if logFn  then logFn("[Arcade] New run! Ticket cap: " .. MAX_TICKETS, "info") end
+            if debugFn then debugFn("[DBG] New arcade run. Cap: " .. MAX_TICKETS, "info") end
+        end
+
+        if lastEvent ~= activeEvent then
+            if lastEvent == "arcade" then
+                stopTicketWatcher()
+                arcadeGodActive = false
+                resetTicketState()
+                if logFn then logFn("[Arcade] Event ended. Ticket state reset.", "info") end
+                
+                -- ⭐ AUTO-DISABLE FLY MODE WHEN ARCADE ENDS
+                if flying then
+                    stopFly()
+                    if logFn then logFn("[Fly] AUTO-DISABLED (Arcade ended). Prevents ghost bugs.", "warn") end
+                    if debugFn then debugFn("[DBG] Fly auto-disabled: arcade event ended", "warn") end
+                end
+            end
+            collecting       = false
+            collectingTicket = false
+            lastEvent        = activeEvent
+            if debugFn then debugFn("[DBG] Event changed to: " .. tostring(activeEvent), "info") end
+        end
+
+        if activeEvent == "arcade" and ENABLED.arcade then
+            if not flying then startFly() end
+            arcadeGodActive = true
+
+            stopGhostLoop()
+            startTicketWatcher()
+            startSpawnCollector()
+
+            if not collecting then
+                loopActive = true
+                task.spawn(function()
+                    runArcade()
+                    loopActive = false
+                end)
+            end
+        else
+            arcadeGodActive = false
+            stopTicketWatcher()
+            stopSpawnCollector()
+
+            if ENABLED.ghost and not ghostLoopRunning then
+                startGhostLoop()
+            elseif not ENABLED.ghost and ghostLoopRunning then
+                stopGhostLoop()
+            end
+        end
+
+        if not collecting and ENABLED.eggs then
+            loopActive = true
+            task.spawn(function()
+                runEggs()
+                loopActive = false
+            end)
+        end
+    end
+end)
+
+-- ============================================================
+-- ⭐ DEDICATED FLY-OFF LOOP (ENSURES FLY TURNS OFF WHEN NO EVENT)
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        local activeEvent = getActiveEvent()
+        -- If no event is active AND fly mode is on, turn it off immediately
+        if not activeEvent and flying then
+            stopFly()
+            if logFn then logFn("[Fly] No active event — fly disabled.", "warn") end
+            if debugFn then debugFn("[DBG] Fly disabled by dedicated no-event watcher.", "warn") end
+        end
+    end
+end)
+
+-- ============================================================
+-- ARCADE ROLL LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if ENABLED.arcadeRoll then
+            arcadeRollActive = true
+            runArcadeRoll()
+        else
+            arcadeRollActive = false
+        end
+    end
+end)
+
+-- ============================================================
+-- SPRING EVENT LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ENABLED.springEvent then
+            claimSpringEvent()
+        end
+    end
+end)
+
+-- ============================================================
+-- TACO FARM LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ENABLED.taco and not tacoLoopActive then
+            startTacoLoop()
+        elseif not ENABLED.taco and tacoLoopActive then
+            stopTacoLoop()
+        end
+    end
+end)
+
+-- ============================================================
+-- PLAYTIME REWARDS LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if ENABLED.playtimeRewards then
+            claimPlaytimeReward()
+        end
+    end
+end)
+
+-- ============================================================
+-- DAILY SPIN LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ENABLED.dailySpin and not dailySpinLoopActive then
+            dailySpinLoopActive = true
+            if logFn then logFn("[DailySpin] Loop started.", "ok") end
+        elseif not ENABLED.dailySpin and dailySpinLoopActive then
+            dailySpinLoopActive = false
+            if logFn then logFn("[DailySpin] Loop stopped.", "warn") end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(0.8)
+        if dailySpinLoopActive then
+            runDailySpin()
+        end
+    end
+end)
+
+-- ============================================================
+-- UI
+-- ============================================================
+for _, g in ipairs(playerGui:GetChildren()) do
+    if g.Name == "GardenBeeFlyer" then g:Destroy() end
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name           = "GardenBeeFlyer"
+screenGui.ResetOnSpawn   = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.IgnoreGuiInset = true
+screenGui.Parent         = playerGui
+
+local COL = {
+    bg     = Color3.fromRGB(18, 18, 22),
+    panel  = Color3.fromRGB(28, 28, 34),
+    border = Color3.fromRGB(50, 50, 60),
+    text   = Color3.fromRGB(220, 220, 230),
+    muted  = Color3.fromRGB(120, 120, 140),
+    green  = Color3.fromRGB(34, 197, 94),
+    gray   = Color3.fromRGB(70, 70, 85),
+    amber  = Color3.fromRGB(251, 191, 36),
+    red    = Color3.fromRGB(220, 80, 80),
+    blue   = Color3.fromRGB(96, 165, 250),
+    purple = Color3.fromRGB(167, 139, 250),
+    dbgbg  = Color3.fromRGB(12, 12, 16),
+}
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size             = UDim2.new(0, 220, 0, 0)
+mainFrame.Position         = UDim2.new(0, 10, 0.5, -160)
+mainFrame.BackgroundColor3 = COL.bg
+mainFrame.BorderSizePixel  = 0
+mainFrame.AutomaticSize    = Enum.AutomaticSize.Y
+mainFrame.ClipsDescendants = true
+mainFrame.Parent           = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+local stroke = Instance.new("UIStroke")
+stroke.Color = COL.border; stroke.Thickness = 1; stroke.Parent = mainFrame
+
+local mainList = Instance.new("UIListLayout")
+mainList.SortOrder = Enum.SortOrder.LayoutOrder
+mainList.Padding   = UDim.new(0, 0)
+mainList.Parent    = mainFrame
+
+local function makeDivider(order)
+    local f = Instance.new("Frame")
+    f.Size             = UDim2.new(1, 0, 0, 1)
+    f.BackgroundColor3 = COL.border
+    f.BorderSizePixel  = 0
+    f.LayoutOrder      = order
+    f.Parent           = mainFrame
+end
+
+local function makeSection(order)
+    local f = Instance.new("Frame")
+    f.Size                   = UDim2.new(1, 0, 0, 0)
+    f.AutomaticSize          = Enum.AutomaticSize.Y
+    f.BackgroundTransparency = 1
+    f.LayoutOrder            = order
+    f.Parent                 = mainFrame
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft   = UDim.new(0, 10)
+    pad.PaddingRight  = UDim.new(0, 10)
+    pad.PaddingTop    = UDim.new(0, 6)
+    pad.PaddingBottom = UDim.new(0, 6)
+    pad.Parent = f
+    local list = Instance.new("UIListLayout")
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding   = UDim.new(0, 4)
+    list.Parent    = f
+    return f
+end
+
+local function makeCap(text, parent, order)
+    local l = Instance.new("TextLabel")
+    l.Text                   = text
+    l.TextSize               = 10
+    l.Font                   = Enum.Font.GothamBold
+    l.TextColor3             = COL.muted
+    l.BackgroundTransparency = 1
+    l.TextXAlignment         = Enum.TextXAlignment.Left
+    l.Size                   = UDim2.new(1, 0, 0, 14)
+    l.LayoutOrder            = order
+    l.Parent                 = parent
+    return l
+end
+
+local function makeToggleRow(label, key, parent, order)
+    local row = Instance.new("Frame")
+    row.Size             = UDim2.new(1, 0, 0, 26)
+    row.BackgroundColor3 = COL.panel
+    row.BorderSizePixel  = 0
+    row.LayoutOrder      = order
+    row.Parent           = parent
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Text                   = label
+    lbl.TextSize               = 12
+    lbl.Font                   = Enum.Font.GothamMedium
+    lbl.TextColor3             = COL.text
+    lbl.BackgroundTransparency = 1
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    lbl.Position               = UDim2.new(0, 8, 0, 0)
+    lbl.Size                   = UDim2.new(1, -50, 1, 0)
+    lbl.Parent                 = row
+
+    local togBg = Instance.new("Frame")
+    togBg.Size             = UDim2.new(0, 32, 0, 17)
+    togBg.Position         = UDim2.new(1, -38, 0.5, -8)
+    togBg.BackgroundColor3 = ENABLED[key] and COL.green or COL.gray
+    togBg.BorderSizePixel  = 0
+    togBg.Parent           = row
+    Instance.new("UICorner", togBg).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size             = UDim2.new(0, 13, 0, 13)
+    knob.Position         = ENABLED[key]
+        and UDim2.new(1, -15, 0.5, -6)
+        or  UDim2.new(0,  2,  0.5, -6)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel  = 0
+    knob.Parent           = togBg
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local btn = Instance.new("TextButton")
+    btn.Size                   = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text                   = ""
+    btn.Parent                 = row
+
+    btn.MouseButton1Click:Connect(function()
+        ENABLED[key] = not ENABLED[key]
+        local on = ENABLED[key]
+        TweenService:Create(togBg, TweenInfo.new(0.15), {
+            BackgroundColor3 = on and COL.green or COL.gray
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.15), {
+            Position = on
+                and UDim2.new(1, -15, 0.5, -6)
+                or  UDim2.new(0,  2,  0.5, -6)
+        }):Play()
+        if key == "arcade" and not on then stopTicketWatcher() end
+        if key == "ghost"  and not on then stopGhostLoop()     end
+        if logFn then
+            logFn("[Config] " .. label .. " " .. (on and "ON" or "OFF"),
+                on and "ok" or "warn")
+        end
+    end)
+end
+
+-- Titlebar
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 34)
+titleBar.BackgroundColor3 = COL.panel
+titleBar.BorderSizePixel  = 0
+titleBar.LayoutOrder      = 0
+titleBar.Parent           = mainFrame
+
+local dot = Instance.new("Frame")
+dot.Size             = UDim2.new(0, 7, 0, 7)
+dot.Position         = UDim2.new(0, 10, 0.5, -3)
+dot.BackgroundColor3 = COL.green
+dot.BorderSizePixel  = 0
+dot.Parent           = titleBar
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+local titleTxt = Instance.new("TextLabel")
+titleTxt.Text                   = "Garden Bee Flyer"
+titleTxt.TextSize               = 13
+titleTxt.Font                   = Enum.Font.GothamBold
+titleTxt.TextColor3             = COL.text
+titleTxt.BackgroundTransparency = 1
+titleTxt.TextXAlignment         = Enum.TextXAlignment.Left
+titleTxt.Position               = UDim2.new(0, 24, 0, 0)
+titleTxt.Size                   = UDim2.new(1, -60, 1, 0)
+titleTxt.Parent                 = titleBar
+
+local hideBtn = Instance.new("TextButton")
+hideBtn.Text             = "—"
+hideBtn.TextSize         = 12
+hideBtn.Font             = Enum.Font.GothamBold
+hideBtn.TextColor3       = COL.muted
+hideBtn.BackgroundColor3 = COL.bg
+hideBtn.BorderSizePixel  = 0
+hideBtn.Size             = UDim2.new(0, 24, 0, 20)
+hideBtn.Position         = UDim2.new(1, -30, 0.5, -10)
+hideBtn.Parent           = titleBar
+Instance.new("UICorner", hideBtn).CornerRadius = UDim.new(0, 5)
+
+local dragging, dragStart, startPos
+titleBar.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true; dragStart = inp.Position; startPos = mainFrame.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(inp)
+    if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = inp.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end
+end)
+UserInputService.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+
+local collapsed = false
+local collapsible = {}
+hideBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    for _, f in ipairs(collapsible) do f.Visible = not collapsed end
+    hideBtn.Text = collapsed and "+" or "—"
+end)
+
+-- Status
+local statusSec = makeSection(1); table.insert(collapsible, statusSec)
+makeCap("STATUS", statusSec, 0)
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Text                   = "[Ready] Press F to fly"
+statusLbl.TextSize               = 11
+statusLbl.Font                   = Enum.Font.Gotham
+statusLbl.TextColor3             = COL.green
+statusLbl.BackgroundTransparency = 1
+statusLbl.TextXAlignment         = Enum.TextXAlignment.Left
+statusLbl.TextWrapped            = true
+statusLbl.Size                   = UDim2.new(1, 0, 0, 28)
+statusLbl.LayoutOrder            = 1
+statusLbl.Parent                 = statusSec
+makeDivider(2)
+
+-- Events toggles
+local evSec = makeSection(3); table.insert(collapsible, evSec)
+makeCap("EVENTS", evSec, 0)
+makeToggleRow("Arcade + Tickets", "arcade", evSec, 1)
+makeToggleRow("Ghost",            "ghost",  evSec, 2)
+makeToggleRow("Eggs",             "eggs",   evSec, 3)
+makeToggleRow("Taco Farm",        "taco", evSec, 4)
+makeToggleRow("Spring Event",     "springEvent", evSec, 5)
+makeDivider(4)
+
+-- Spins toggles
+local spinSec = makeSection(5); table.insert(collapsible, spinSec)
+makeCap("SPINS", spinSec, 0)
+makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
+makeToggleRow("Arcade Rolls",     "arcadeRoll", spinSec, 2)
+makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 3)
+makeDivider(6)
+
+-- Active event
+local aeSec = makeSection(7); table.insert(collapsible, aeSec)
+makeCap("ACTIVE EVENT", aeSec, 0)
+makeDivider(9)
+
+
+print("[FlyScript] Garden Bee Flyer v32 OPTIMIZED - Event-Based Detection + Consolidated Noclip running! Press F to fly.")
