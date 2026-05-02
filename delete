@@ -1,4 +1,21 @@
-task.wait(20)
+local Players = game:GetService("Players")
+
+-- Wait until LocalPlayer exists
+local player
+repeat
+    task.wait(10)
+    player = Players.LocalPlayer
+until player
+
+-- Wait for Character to load (or wait for CharacterAdded event)
+local character = player.Character
+if not character then
+    character = player.CharacterAdded:Wait()
+end
+
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local playerGui = player:WaitForChild("PlayerGui")
 -- ==========================================
 -- 1. SEARCH WORKSPACE (Delete "PlotModel")
 -- ==========================================
