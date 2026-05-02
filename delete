@@ -1,0 +1,121 @@
+task.wait(20)
+-- ==========================================
+-- 1. SEARCH WORKSPACE (Delete "PlotModel")
+-- ==========================================
+local plotModelCount = 0
+
+for _, item in ipairs(workspace:GetDescendants()) do
+    if string.find(item.Name, "PlotModel") then
+        item:Destroy()
+        plotModelCount += 1
+    end
+end
+print("Optimized: Deleted " .. plotModelCount .. " items containing 'PlotModel' in their name.")
+
+
+-- ==========================================
+-- 2. OPTIMIZE CORE FOLDERS (Assets & Scriptable)
+-- ==========================================
+local coreFolder = workspace:FindFirstChild("Core")
+
+if coreFolder then
+    -- --- A. Optimize Assets (Keep Dark Curry Ground) ---
+    local assetsFolder = coreFolder:FindFirstChild("Assets")
+    if assetsFolder then
+        local deletedCount = 0
+        local keptCount = 0
+        
+        for _, item in ipairs(assetsFolder:GetChildren()) do
+            local keepItem = false
+            
+            if string.find(string.lower(item.Name), "ground") then
+                if item:IsA("BasePart") then
+                    if string.lower(item.BrickColor.Name) == "dark curry" then
+                        keepItem = true
+                    end
+                end
+            end
+            
+            if keepItem then
+                keptCount += 1
+            else
+                item:Destroy()
+                deletedCount += 1
+            end
+        end
+        print("Optimized: Deleted " .. deletedCount .. " items from Assets. Kept " .. keptCount .. " Dark Curry ground objects.")
+    else
+        warn("Skipped: 'Assets' folder not found.")
+    end
+
+    -- --- B. Optimize Scriptable (Keep TouchParts.ArcadeProximityPart) ---
+    local scriptableFolder = coreFolder:FindFirstChild("Scriptable")
+    if scriptableFolder then
+        
+        for _, item in ipairs(scriptableFolder:GetChildren()) do
+            -- If the item is TouchParts, we need to look inside it instead of deleting it
+            if item.Name == "TouchParts" then
+                for _, subItem in ipairs(item:GetChildren()) do
+                    -- Delete everything inside TouchParts EXCEPT the ArcadeProximityPart
+                    if subItem.Name ~= "ArcadeProximityPart" then
+                        subItem:Destroy()
+                    end
+                end
+            else
+                -- If it's NOT TouchParts, it is safe to completely destroy
+                item:Destroy()
+            end
+        end
+        print("Optimized: Scriptable folder cleared (Kept TouchParts.ArcadeProximityPart).")
+    else
+        warn("Skipped: 'Scriptable' folder not found.")
+    end
+else
+    warn("Optimization failed: 'Core' folder not found in the workspace.")
+end
+
+
+-- ==========================================
+-- 3. OPTIMIZE REPLICATEDSTORAGE (Clear Storage Folder)
+-- ==========================================
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local storageFolder = replicatedStorage:FindFirstChild("Storage")
+
+if storageFolder then
+    storageFolder:ClearAllChildren()
+    print("Optimized: Everything inside ReplicatedStorage.Storage has been cleared.")
+else
+    warn("Skipped: 'Storage' folder not found in ReplicatedStorage.")
+end
+
+
+-- ==========================================
+-- 4. OPTIMIZE GUI (Delete "RightSide" Panel)
+-- ==========================================
+local players = game:GetService("Players")
+local localPlayer = players.LocalPlayer
+
+if localPlayer then
+    local playerGui = localPlayer:FindFirstChild("PlayerGui")
+    
+    if playerGui then
+        local mainGui = playerGui:FindFirstChild("Main")
+        
+        if mainGui then
+            local rightSide = mainGui:FindFirstChild("RightSide")
+            
+            if rightSide then
+                rightSide:Destroy()
+                print("Optimized: 'RightSide' completely deleted from Main GUI.")
+            else
+                warn("Skipped: 'RightSide' not found in Main GUI.")
+            end
+        else
+            warn("Skipped: 'Main' GUI not found in PlayerGui.")
+        end
+    else
+        warn("Skipped: PlayerGui not found.")
+    end
+else
+    warn("Optimization failed for GUI: LocalPlayer not found (Make sure this runs locally).")
+end
