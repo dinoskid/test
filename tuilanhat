@@ -1,4 +1,5 @@
 -- Garden Bee Flyer v1.2 - MUSEUM DIGPILE + GHOST + EGGS
+-- Removed: Arcade, Tickets, Arcade Rolls, Taco Farm
 -- Added: Museum Digpile Auto-Farm
 -- Based on v1.1 (proven working ghost system)
 -- Inject via executor
@@ -270,24 +271,31 @@ local function digPile(pile)
     teleportTo(pile.part.Position + Vector3.new(0, 2, 0))
     task.wait(0.3)
     
-    -- Fire the proximity prompt
+    -- Fire the proximity prompt to start the minigame
     firePrompt(pile.prompt, 0)
     task.wait(0.6)
     
-    -- Send StageReached for stages 1-7
+    -- Fire PlayDigVFX to start the dig animation
+    pcall(function()
+        digRemote:FireServer("PlayDigVFX", pile.name)
+    end)
+    task.wait(0.3)
+    
+    -- Send StageReached for stages 1-7 (simulates clicking the green square 7 times)
     for stage = 1, 7 do
         if not ENABLED.museumDig then break end
         pcall(function()
             digRemote:FireServer("StageReached", pile.name, stage)
         end)
+        task.wait(0.25)  -- Timing between stage clicks
     end
     
-    -- Send CompleteDig
+    -- Send CompleteDig to finish the dig and claim rewards
     pcall(function()
         digRemote:FireServer("CompleteDig", pile.name)
     end)
     
-    task.wait(1)
+    task.wait(1.5)
     diggingActive = false
 end
 
