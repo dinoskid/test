@@ -1,6 +1,6 @@
--- Garden Bee Flyer v2.1 - MUSEUM DIGPILE (instant dig) + GHOST + EGGS + SPRING + SPINS
--- Removed: Arcade/Tickets, Taco Farm, Arcade Rolls
--- Added: Museum Digpile with zero delay between PlayDigVFX and CompleteDig, zero jitter between piles
+-- Garden Bee Flyer v2.2 - MUSEUM DIGPILE (instant) + GHOST + EGGS + SPRING + SPINS
+-- Fixed: UI toggles for Ghost & Museum Digpile now visible and working
+-- Museum dig loop responds to toggle in real time
 -- Inject via executor
 
 -- ========== Wait for LocalPlayer and Character ==========
@@ -226,7 +226,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ============================================================
--- MUSEUM DIGPILE AUTO-FARM (instant dig, no delays)
+-- MUSEUM DIGPILE AUTO-FARM (instant dig, no delays, responds to toggle)
 -- ============================================================
 local diggingActive = false
 local digRemote = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Dig")
@@ -273,9 +273,10 @@ local function digPile(pile)
     diggingActive = false
 end
 
-local function startDigLoop()
-    task.spawn(function()
-        while ENABLED.museumDig do
+-- Museum dig loop that runs continuously and checks toggle
+task.spawn(function()
+    while true do
+        if ENABLED.museumDig then
             local piles = findDigPiles()
             if #piles > 0 then
                 for _, pile in ipairs(piles) do
@@ -284,11 +285,13 @@ local function startDigLoop()
                     task.wait(0)  -- zero delay between piles
                 end
             else
-                task.wait(1)  -- wait a bit if no piles found
+                task.wait(1)  -- wait if no piles found
             end
+        else
+            task.wait(1)  -- wait while disabled
         end
-    end)
-end
+    end
+end)
 
 -- ============================================================
 -- GHOST SYSTEM (unchanged)
@@ -476,6 +479,18 @@ local function stopGhostLoop()
     end
 end
 
+-- Ghost control loop that responds to toggle
+task.spawn(function()
+    while true do
+        if ENABLED.ghost and getActiveEvent() == "ghost" then
+            if not ghostLoopRunning then startGhostLoop() end
+        else
+            if ghostLoopRunning then stopGhostLoop() end
+        end
+        task.wait(1)
+    end
+end)
+
 -- ============================================================
 -- EGGS (unchanged)
 -- ============================================================
@@ -510,6 +525,16 @@ local function runEggs()
     end
 end
 
+-- Eggs loop
+task.spawn(function()
+    while true do
+        if ENABLED.eggs and not collecting then
+            task.spawn(runEggs)
+        end
+        task.wait(2)
+    end
+end)
+
 -- ============================================================
 -- SPRING EVENT
 -- ============================================================
@@ -524,6 +549,13 @@ local function claimSpringEvent()
         springEventLastExecution = now
     end)
 end
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        claimSpringEvent()
+    end
+end)
 
 -- ============================================================
 -- PLAYTIME REWARDS
@@ -541,6 +573,13 @@ local function claimPlaytimeReward()
     end
 end
 
+task.spawn(function()
+    while true do
+        task.wait(5)
+        claimPlaytimeReward()
+    end
+end)
+
 -- ============================================================
 -- DAILY SPIN
 -- ============================================================
@@ -552,66 +591,6 @@ local function runDailySpin()
         dailySpinCount += 1
     end)
 end
-
--- ============================================================
--- NOCLIP ENFORCER
--- ============================================================
-RunService.Stepped:Connect(function()
-    if not character or not humanoid or not humanoid.Parent then return end
-    if ghostLoopRunning or flying then
-        for _, p in ipairs(character:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-    end
-end)
-
--- ============================================================
--- MAIN LOOP (ghost & eggs)
--- ============================================================
-task.spawn(function()
-    while true do
-        task.wait(1)
-        local activeEvent = getActiveEvent()
-        if activeEvent == "ghost" and ENABLED.ghost then
-            if not ghostLoopRunning then startGhostLoop() end
-        else
-            if ghostLoopRunning then stopGhostLoop() end
-        end
-        if not collecting and ENABLED.eggs then
-            task.spawn(runEggs)
-        end
-    end
-end)
-
--- ============================================================
--- MUSEUM DIG LOOP
--- ============================================================
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if ENABLED.museumDig then
-            startDigLoop()
-            break
-        end
-    end
-end)
-
--- ============================================================
--- OTHER LOOPS
--- ============================================================
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if ENABLED.springEvent then claimSpringEvent() end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if ENABLED.playtimeRewards then claimPlaytimeReward() end
-    end
-end)
 
 task.spawn(function()
     while true do
@@ -632,7 +611,19 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- UI (same as before, with "Museum Digpile" toggle)
+-- NOCLIP ENFORCER
+-- ============================================================
+RunService.Stepped:Connect(function()
+    if not character or not humanoid or not humanoid.Parent then return end
+    if ghostLoopRunning or flying then
+        for _, p in ipairs(character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end
+end)
+
+-- ============================================================
+-- UI (all toggles visible: Museum Digpile, Ghost, Eggs, Spring, Daily Spin, Playtime)
 -- ============================================================
 for _, g in ipairs(playerGui:GetChildren()) do
     if g.Name == "GardenBeeFlyer" then g:Destroy() end
@@ -759,7 +750,7 @@ local function makeToggleRow(label, key, parent, order)
         local on = ENABLED[key]
         TweenService:Create(togBg, TweenInfo.new(0.15), { BackgroundColor3 = on and COL.green or COL.gray }):Play()
         TweenService:Create(knob, TweenInfo.new(0.15), { Position = on and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 2, 0.5, -6) }):Play()
-        if key == "ghost" and not on then stopGhostLoop() end
+        -- No extra stop logic needed; loops check ENABLED directly
     end)
 end
 
@@ -780,7 +771,7 @@ dot.Parent = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text = "Garden Bee Flyer v2.1"
+titleTxt.Text = "Garden Bee Flyer v2.2"
 titleTxt.TextSize = 13
 titleTxt.Font = Enum.Font.GothamBold
 titleTxt.TextColor3 = COL.text
@@ -845,7 +836,7 @@ statusLbl.LayoutOrder = 1
 statusLbl.Parent = statusSec
 makeDivider(2)
 
--- Events toggles
+-- Events toggles (Museum Digpile, Ghost, Eggs, Spring Event)
 local evSec = makeSection(3)
 table.insert(collapsible, evSec)
 makeCap("EVENTS", evSec, 0)
@@ -855,11 +846,11 @@ makeToggleRow("Eggs", "eggs", evSec, 3)
 makeToggleRow("Spring Event", "springEvent", evSec, 4)
 makeDivider(4)
 
--- Spins toggles
+-- Spins toggles (Daily Spin, Playtime Rewards)
 local spinSec = makeSection(5)
 table.insert(collapsible, spinSec)
 makeCap("SPINS", spinSec, 0)
 makeToggleRow("Daily Spin", "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 
-print("[Garden Bee Flyer v2.1] Loaded. Museum Digpile (instant dig, no delay), Ghost, Eggs, Spring, Spins active.")
+print("[Garden Bee Flyer v2.2] Loaded. Museum Digpile, Ghost, Eggs, Spring, Spins active. Toggles are visible.")
