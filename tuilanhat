@@ -352,7 +352,7 @@ local function flyToTicket(part, prompt)
     teleportTo(part.Position + Vector3.zero)
 
     if bv then bv.Velocity = Vector3.zero end
-    local settle = jitter(1.5, 1.0)
+    local settle = jitter(0.5, 0.1)
     if debugFn then debugFn("[DBG] Settle: " .. string.format("%.2f", settle) .. "s", "info") end
     task.wait(settle)
 
@@ -360,7 +360,7 @@ local function flyToTicket(part, prompt)
         if logFn then logFn("[Ticket] Collecting ticket...", "fly") end
         local ok, err = pcall(function() fireproximityprompt(prompt, 0) end)
         if not ok and debugFn then debugFn("[ERR] fireproximityprompt failed: " .. tostring(err), "err") end
-        local confirm = jitter(1.2, 0.8)
+        local confirm = jitter(0, 0.5)
         if debugFn then debugFn("[DBG] Confirm: " .. string.format("%.2f", confirm) .. "s", "info") end
         task.wait(confirm)
 
