@@ -231,8 +231,9 @@ local loopActive = false
 local lastEvent  = nil
 
 -- ============================================================
--- MUSEUM DIGPILE AUTOMATION
--- Sequence: PlayDigVFX → StageReached (1-7) → CompleteDig
+-- MUSEUM DIGPILE AUTOMATION (Index-Based + Teleport System)
+-- Sequence: Teleport → Fire Prompt → PlayDigVFX → StageReached (1-7) → CompleteDig
+-- Uses same logic as ticket system with jitter and proper timing
 -- ============================================================
 local diggingActive = false
 
@@ -241,17 +242,26 @@ local function findDigPiles()
     local events = workspace:FindFirstChild("Events")
     if not events then return piles end
     
-    for _, child in ipairs(events:GetChildren()) do
-        if child:IsA("Model") and string.match(child.Name, "^DigPile_%d+") then
-            local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+    -- Get all children and check each one for digpiles
+    for idx, child in ipairs(events:GetChildren()) do
+        if child:IsA("Model") and string.match(child.Name, "DigPile") then
+            local primary = child.PrimaryPart
+            if not primary then
+                primary = child:FindFirstChildWhichIsA("BasePart")
+            end
             if primary then
-                local prompt = primary:FindFirstChildWhichIsA("ProximityPrompt")
+                -- Get ProximityPrompt from PrimaryPart (like workspace.Events:GetChildren()[9].PrimaryPart.ProximityPrompt)
+                local prompt = primary:FindFirstChild("ProximityPrompt")
+                if not prompt then
+                    prompt = primary:FindFirstChildWhichIsA("ProximityPrompt")
+                end
                 if prompt then
                     table.insert(piles, {
                         model = child,
                         part = primary,
                         prompt = prompt,
-                        name = child.Name
+                        name = child.Name,
+                        index = idx
                     })
                 end
             end
@@ -266,40 +276,44 @@ local function digPile(pile)
     
     diggingActive = true
     
-    -- Step 1: Teleport to the digpile
+    -- Teleport directly above the digpile (same as ticket system)
     if not flying then startFly() end
-    teleportTo(pile.part.Position + Vector3.new(0, 2.5, 0))
-    task.wait(0.4)
+    teleportTo(pile.part.Position + Vector3.zero)
     
-    -- Step 2: Fire proximity prompt to initiate the minigame
-    firePrompt(pile.prompt, 0)
-    task.wait(0.7)
+    if bv then bv.Velocity = Vector3.zero end
+    local settle = jitter(0.5, 0.1)
+    task.wait(settle)
     
-    -- Step 3: Fire PlayDigVFX - starts the dig animation and visual effect
-    pcall(function()
-        digRemote:FireServer("PlayDigVFX", pile.name)
-    end)
-    task.wait(0.2)
-    
-    -- Step 4: Fire StageReached for stages 1-7
-    -- Based on the game mechanics, progress fills up and triggers StageReached at thresholds
-    -- We simulate all 7 stages with appropriate timing
-    for stage = 1, 7 do
-        if not ENABLED.museumDig then break end
+    -- Fire the proximity prompt to start the minigame (integrated UI)
+    if pile.part and pile.part.Parent and pile.prompt then
+        local ok, err = pcall(function() fireproximityprompt(pile.prompt, 0) end)
+        local confirm = jitter(0.5, 0.3)
+        task.wait(confirm)
+        
+        -- Fire PlayDigVFX to initialize the dig
         pcall(function()
-            digRemote:FireServer("StageReached", pile.name, stage)
+            digRemote:FireServer("PlayDigVFX", pile.name)
         end)
-        task.wait(0.15)  -- Timing between stages (simulates progress filling)
+        task.wait(jitter(0.2, 0.1))
+        
+        -- Fire StageReached for stages 1-7 (simulates clicking in green zone)
+        for stage = 1, 7 do
+            if not ENABLED.museumDig then break end
+            pcall(function()
+                digRemote:FireServer("StageReached", pile.name, stage)
+            end)
+            task.wait(jitter(0.15, 0.08))  -- Timing between stages with jitter
+        end
+        
+        -- Fire CompleteDig to finish and claim reward
+        task.wait(jitter(0.2, 0.1))
+        pcall(function()
+            digRemote:FireServer("CompleteDig", pile.name)
+        end)
+        
+        task.wait(jitter(1.5, 0.5))  -- Wait for completion and reward animation
     end
     
-    -- Step 5: Fire CompleteDig when progress reaches 100%
-    -- This claims the reward and completes the dig
-    task.wait(0.2)
-    pcall(function()
-        digRemote:FireServer("CompleteDig", pile.name)
-    end)
-    
-    task.wait(1.5)  -- Wait for completion and cleanup
     diggingActive = false
 end
 
@@ -310,6 +324,7 @@ local function runMuseumDig()
             if not ENABLED.museumDig then break end
             if pile.part and pile.part.Parent then
                 digPile(pile)
+                task.wait(jitter(2, 1))  -- Delay between piles like ticket system (2-3 seconds)
             end
         end
     end
@@ -898,7 +913,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.3"
+titleTxt.Text                   = "Garden Bee Flyer v1.4"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -979,5 +994,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.3] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.3] Museum Digpile: PlayDigVFX → StageReached (1-7) → CompleteDig")
+print("[Garden Bee Flyer v1.4] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.4] Museum Digpile: Teleport → Prompt → PlayDigVFX → StageReached (1-7) → CompleteDig")
+print("[Garden Bee Flyer v1.4] Using ticket system logic with jitter delays")
