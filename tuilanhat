@@ -1,73 +1,105 @@
--- Garden Bee Flyer v2.3 - FIXED UI VISIBILITY
--- Museum Digpile + Ghost + Eggs + Spring + Spins
--- UI GUARANTEED TO SHOW
+-- Garden Bee Flyer v1.2 - MUSEUM DIGPILE + GHOST + EGGS
+-- Added: Museum Digpile Auto-Farm
+-- Based on v1.1 (proven working ghost system)
 -- Inject via executor
 
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
+
+local player
+repeat
+    task.wait(10)
+    player = Players.LocalPlayer
+until player
+
+local character = player.Character
+if not character then
+    character = player.CharacterAdded:Wait()
+end
+
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
-
--- Wait for PlayerGui explicitly
-local playerGui
-while not playerGui do
-    playerGui = player:WaitForChild("PlayerGui")
-    task.wait(0.1)
-end
+local playerGui = player:WaitForChild("PlayerGui")
 
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+-- ============================================================
 -- CONFIG
-local CONFIG = { FlySpeed = 32, HoverHeight = 1, ItemCooldown = 1.5 }
-local MIN_Y = 0
-local GHOST_MIN_Y = -5
-local SWATTER_TYPE = "Swatter"
-
--- ENABLED FEATURES
-local ENABLED = {
-    eggs = true,
-    ghost = true,
-    springEvent = true,
-    playtimeRewards = false,
-    dailySpin = false,
-    museumDig = true,
+-- ============================================================
+local CONFIG = {
+    FlySpeed     = 32,
+    HoverHeight  = 1,
+    ItemCooldown = 1.5,
 }
 
+local MIN_Y        = 0
+local GHOST_MIN_Y  = -5
+local SWATTER_TYPE = "Swatter"
+
+-- ============================================================
+-- ENABLED FEATURES
+-- ============================================================
+local ENABLED = {
+    eggs             = true,
+    ghost            = true,
+    springEvent      = true,
+    playtimeRewards  = false,
+    dailySpin        = false,
+    museumDig        = true,
+}
+
+-- ============================================================
 -- STATE VARIABLES
+-- ============================================================
 local springEventExecutionCount = 0
 local springEventLastExecution = 0
 local SPRING_EVENT_COOLDOWN = 1200
+
 local playtimeRewardIndex = 1
 local playtimeRewardCollected = 0
-local dailySpinCount = 0
-local dailySpinLoopActive = false
 
+local dailySpinCount = 0
+
+-- ============================================================
 -- CANDY REFERENCE
-local candyRef = ReplicatedStorage:WaitForChild("Storage"):WaitForChild("Materials"):WaitForChild("Candy")
+-- ============================================================
+local candyRef = ReplicatedStorage
+    :WaitForChild("Storage")
+    :WaitForChild("Materials")
+    :WaitForChild("Candy")
+
 local function getCandyCount()
-    local val = candyRef:FindFirstChildWhichIsA("IntValue") or candyRef:FindFirstChildWhichIsA("NumberValue")
+    local val = candyRef:FindFirstChildWhichIsA("IntValue")
+        or candyRef:FindFirstChildWhichIsA("NumberValue")
     return val and val.Value or 0
 end
 
--- HELPERS
+-- ============================================================
+-- HONEYPOT GUARD
+-- ============================================================
 local function isHoneypot(obj)
     local n = obj.Name
     return n:find("Honeypot") ~= nil or n:find("_HoneyPot") ~= nil
 end
 
+-- ============================================================
+-- HELPERS
+-- ============================================================
 local function getBasePart(obj)
     if obj:IsA("BasePart") then return obj end
-    if obj:IsA("Model") then return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true) end
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+    end
     return nil
 end
 
 local function getPrompt(obj)
     local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-    if not prompt and obj.Parent then prompt = obj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true) end
+    if not prompt and obj.Parent then
+        prompt = obj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+    end
     return prompt
 end
 
@@ -93,22 +125,45 @@ local function teleportTo(pos)
     noclipConn:Disconnect()
 end
 
+local function jitter(base, range)
+    return base + math.random() * range
+end
+
+-- ============================================================
+-- EVENT DETECTION
+-- ============================================================
 local function getActiveEvent()
     for _, obj in ipairs(workspace:GetChildren()) do
-        if obj:IsA("Model") and string.match(obj.Name, "^FastGhost_%d+$") then return "ghost" end
+        if obj:IsA("Model") and string.match(obj.Name, "^FastGhost_%d+$") then
+            return "ghost"
+        end
     end
     return nil
 end
 
+-- ============================================================
 -- REMOTES
-local evRemotes = ReplicatedStorage:WaitForChild("Events")
-local equipRemote = evRemotes:WaitForChild("EquipItem")
+-- ============================================================
+local evRemotes     = ReplicatedStorage:WaitForChild("Events")
+local equipRemote   = evRemotes:WaitForChild("EquipItem")
 local swatterRemote = evRemotes:WaitForChild("Swatter")
-local digRemote = evRemotes:WaitForChild("Dig")
+local digRemote     = evRemotes:WaitForChild("Dig")
 
+-- ============================================================
 -- FLY SYSTEM
+-- ============================================================
 local flying = false
 local bv, bg
+
+local function setNoclip(on)
+    if on then
+        RunService.Stepped:Connect(function()
+            for _, p in ipairs(character:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end)
+    end
+end
 
 local function stopFly()
     flying = false
@@ -116,7 +171,7 @@ local function stopFly()
     if bg then bg:Destroy(); bg = nil end
     pcall(function()
         humanoid.PlatformStand = false
-        humanoid.AutoRotate = true
+        humanoid.AutoRotate    = true
     end)
 end
 
@@ -124,30 +179,29 @@ local function startFly()
     stopFly()
     flying = true
     humanoid.PlatformStand = true
-    humanoid.AutoRotate = false
-    
-    local noclipConn = RunService.Stepped:Connect(function()
-        for _, p in ipairs(character:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-    end)
+    humanoid.AutoRotate    = false
+    setNoclip(true)
 
-    bv = Instance.new("BodyVelocity")
-    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-    bv.Velocity = Vector3.zero
-    bv.Parent = rootPart
+    bv           = Instance.new("BodyVelocity")
+    bv.MaxForce  = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity  = Vector3.zero
+    bv.Parent    = rootPart
 
-    bg = Instance.new("BodyGyro")
+    bg           = Instance.new("BodyGyro")
     bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
-    bg.P = 1e4
-    bg.CFrame = rootPart.CFrame
-    bg.Parent = rootPart
+    bg.P         = 1e4
+    bg.CFrame    = rootPart.CFrame
+    bg.Parent    = rootPart
 end
 
 UserInputService.InputBegan:Connect(function(inp, gp)
     if gp then return end
     if inp.KeyCode == Enum.KeyCode.F then
-        if flying then stopFly() else startFly() end
+        if flying then
+            stopFly()
+        else
+            startFly()
+        end
     end
 end)
 
@@ -155,34 +209,49 @@ RunService.Heartbeat:Connect(function()
     if not flying or not bv or not bg then return end
     local cam = workspace.CurrentCamera
     local dir = Vector3.zero
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0, 1, 0) end
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= Vector3.new(0, 1, 0) end
+    if UserInputService:IsKeyDown(Enum.KeyCode.W)         then dir += cam.CFrame.LookVector  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S)         then dir -= cam.CFrame.LookVector  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A)         then dir -= cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D)         then dir += cam.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space)     then dir += Vector3.new(0, 1, 0)  end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= Vector3.new(0, 1, 0)  end
     if dir.Magnitude > 0 then
         bv.Velocity = dir.Unit * CONFIG.FlySpeed
-        bg.CFrame = CFrame.new(Vector3.zero, dir)
+        bg.CFrame   = CFrame.new(Vector3.zero, dir)
     else
         bv.Velocity = Vector3.zero
     end
 end)
 
--- MUSEUM DIG
+-- ============================================================
+-- FLAGS
+-- ============================================================
+local collecting = false
+local loopActive = false
+local lastEvent  = nil
+
+-- ============================================================
+-- MUSEUM DIGPILE SYSTEM
+-- ============================================================
 local diggingActive = false
 
 local function findDigPiles()
     local piles = {}
     local events = workspace:FindFirstChild("Events")
     if not events then return piles end
+    
     for _, child in ipairs(events:GetChildren()) do
-        if child.Name:match("^DigPile_%d+$") then
-            local primary = child:FindFirstChild("PrimaryPart") or child:FindFirstChildWhichIsA("BasePart")
+        if child:IsA("Model") and string.match(child.Name, "^DigPile_%d+") then
+            local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
             if primary then
                 local prompt = primary:FindFirstChildWhichIsA("ProximityPrompt")
                 if prompt then
-                    table.insert(piles, { model = child, part = primary, prompt = prompt, index = child.Name })
+                    table.insert(piles, {
+                        model = child,
+                        part = primary,
+                        prompt = prompt,
+                        name = child.Name
+                    })
                 end
             end
         end
@@ -192,57 +261,76 @@ end
 
 local function digPile(pile)
     if diggingActive then return end
+    if not pile or not pile.part or not pile.part.Parent then return end
+    
     diggingActive = true
+    
+    -- Teleport to the digpile
     if not flying then startFly() end
     teleportTo(pile.part.Position + Vector3.new(0, 2, 0))
-    task.wait(0.1)
+    task.wait(0.3)
+    
+    -- Fire the proximity prompt
     firePrompt(pile.prompt, 0)
-    pcall(function() digRemote:FireServer("PlayDigVFX", pile.index) end)
-    pcall(function() digRemote:FireServer("CompleteDig", pile.index) end)
+    task.wait(0.6)
+    
+    -- Send StageReached for stages 1-7
+    for stage = 1, 7 do
+        if not ENABLED.museumDig then break end
+        pcall(function()
+            digRemote:FireServer("StageReached", pile.name, stage)
+        end)
+    end
+    
+    -- Send CompleteDig
+    pcall(function()
+        digRemote:FireServer("CompleteDig", pile.name)
+    end)
+    
+    task.wait(1)
     diggingActive = false
 end
 
-task.spawn(function()
-    while true do
-        if ENABLED.museumDig then
-            local piles = findDigPiles()
-            if #piles > 0 then
-                for _, pile in ipairs(piles) do
-                    if not ENABLED.museumDig then break end
-                    digPile(pile)
-                    task.wait(0)
-                end
-            else
-                task.wait(1)
+local function runMuseumDig()
+    local piles = findDigPiles()
+    if #piles > 0 then
+        for _, pile in ipairs(piles) do
+            if not ENABLED.museumDig then break end
+            if pile.part and pile.part.Parent then
+                digPile(pile)
             end
-        else
-            task.wait(1)
         end
     end
-end)
+end
 
--- GHOST SYSTEM
+-- ============================================================
+-- GHOST STATE
+-- ============================================================
 local ghostLoopRunning = false
-local ghostHeartbeat = nil
-local ghostFlySpeed = 70
-local chaseDistance = 3.2
-local dodgeDistance = 5
-local hitCooldown = 0.05
-local ghostTarget = nil
-local ghostHitting = false
-local ghostHitStart = 0
-local lastHitTime = 0
-local lastReequipTime = 0
-local candyChecking = false
+local ghostHeartbeat   = nil
+local ghostFlySpeed    = 70
+local chaseDistance    = 3.2
+local dodgeDistance    = 5
+local hitCooldown      = 0.05
+local ghostTarget      = nil
+local ghostHitting     = false
+local ghostHitStart    = 0
+local lastHitTime      = 0
+local lastReequipTime  = 0
+local candyChecking    = false
+
 local ghostRayParams = RaycastParams.new()
 ghostRayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 local function equipSwatter()
     local char = player.Character
-    local hum = char and char:FindFirstChild("Humanoid")
+    local hum  = char and char:FindFirstChild("Humanoid")
     if hum and player:FindFirstChild("Backpack") then
         local tool = player.Backpack:FindFirstChild(SWATTER_TYPE)
-        if tool then hum:EquipTool(tool); return end
+        if tool then
+            hum:EquipTool(tool)
+            return
+        end
     end
     pcall(function() equipRemote:InvokeServer(SWATTER_TYPE, 0) end)
     pcall(function() equipRemote:FireServer(SWATTER_TYPE, 0) end)
@@ -261,9 +349,14 @@ local function findGhost()
         if obj:IsA("Model") and string.match(obj.Name, "^FastGhost_%d+$") then
             local pivot = obj:GetPivot()
             if pivot then
-                if pivot.Position.Y < GHOST_MIN_Y then continue end
+                if pivot.Position.Y < GHOST_MIN_Y then
+                    continue
+                end
                 local dist = (pivot.Position - rootPart.Position).Magnitude
-                if dist < bestDist then bestDist = dist; best = obj end
+                if dist < bestDist then
+                    bestDist = dist
+                    best     = obj
+                end
             end
         end
     end
@@ -272,50 +365,62 @@ end
 
 local function startGhostLoop()
     if ghostLoopRunning then return end
-    ghostTarget = nil
-    ghostHitting = false
-    candyChecking = false
-    lastReequipTime = 0
+    ghostTarget      = nil
+    ghostHitting     = false
+    candyChecking    = false
+    lastReequipTime  = 0
+
     stopFly()
     equipSwatter()
     task.wait(1)
+
     ghostLoopRunning = true
     ghostRayParams.FilterDescendantsInstances = {character}
 
     ghostHeartbeat = RunService.Heartbeat:Connect(function()
-        if not ghostLoopRunning or not ENABLED.ghost then ghostHitting = false; return end
+        if not ghostLoopRunning or not ENABLED.ghost then
+            ghostHitting = false
+            return
+        end
+
         local char = player.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         if not root then return end
 
         if not ghostTarget or not ghostTarget.Parent then
-            ghostTarget = findGhost()
+            ghostTarget  = findGhost()
             ghostHitting = false
-            if not ghostTarget then root.Velocity = Vector3.zero; return end
+            if not ghostTarget then
+                root.Velocity = Vector3.zero
+                return
+            end
             equipSwatter()
         end
 
         local pivot = ghostTarget:GetPivot()
         if pivot and pivot.Position.Y < GHOST_MIN_Y then
-            ghostTarget = nil
+            ghostTarget  = nil
             ghostHitting = false
             root.Velocity = Vector3.zero
             return
         end
 
         local currentPos = root.Position
-        local targetPos = ghostTarget:GetPivot().Position
-        local direction = (targetPos - currentPos)
-        local distance = direction.Magnitude
-        if distance > 0.1 then direction = direction.Unit else direction = Vector3.zero end
+        local targetPos  = ghostTarget:GetPivot().Position
+        local direction  = (targetPos - currentPos)
+        local distance   = direction.Magnitude
+
+        if distance > 0.1 then direction = direction.Unit
+        else direction = Vector3.zero end
+
         local moveDir = direction * ghostFlySpeed
 
         if distance > 0.1 then
             local result = workspace:Raycast(currentPos, direction * dodgeDistance, ghostRayParams)
             if result then
                 local right = direction:Cross(Vector3.new(0, 1, 0)).Unit
-                local left = -right
+                local left  = -right
                 if not workspace:Raycast(currentPos, (direction + left * 0.7).Unit * dodgeDistance, ghostRayParams) then
                     moveDir = (direction + left * 0.85).Unit * ghostFlySpeed
                 elseif not workspace:Raycast(currentPos, (direction + right * 0.7).Unit * dodgeDistance, ghostRayParams) then
@@ -328,24 +433,33 @@ local function startGhostLoop()
 
         if distance < 8 then
             local heightDiff = currentPos.Y - targetPos.Y
-            if heightDiff > 4 then moveDir = moveDir * 0.6 + Vector3.new(0, -35, 0) end
+            if heightDiff > 4 then
+                moveDir = moveDir * 0.6 + Vector3.new(0, -35, 0)
+            end
         end
+
         root.Velocity = moveDir
 
         if distance <= chaseDistance then
             if not ghostHitting then
-                ghostHitting = true
+                ghostHitting  = true
                 ghostHitStart = tick()
                 equipSwatter()
             end
+
             local now = tick()
+
             if now - lastReequipTime >= 2 then
                 lastReequipTime = now
-                if not isSwatterEquipped() then equipSwatter() end
+                if not isSwatterEquipped() then
+                    equipSwatter()
+                end
             end
+
             if (now - ghostHitStart) < 120 then
                 if (now - lastHitTime) >= hitCooldown then
                     lastHitTime = now
+
                     if not candyChecking then
                         candyChecking = true
                         local candyBefore = getCandyCount()
@@ -355,7 +469,7 @@ local function startGhostLoop()
                             local candyAfter = getCandyCount()
                             if candyAfter > candyBefore then
                                 ghostHitting = false
-                                ghostTarget = nil
+                                ghostTarget  = nil
                                 task.wait(1.5)
                             end
                             candyChecking = false
@@ -366,10 +480,12 @@ local function startGhostLoop()
                 end
             else
                 ghostHitting = false
-                ghostTarget = nil
+                ghostTarget  = nil
             end
         else
-            if ghostHitting then ghostHitting = false end
+            if ghostHitting then
+                ghostHitting = false
+            end
         end
 
         if root.Position.Y - targetPos.Y > 6 and distance < 5 then
@@ -380,30 +496,23 @@ end
 
 local function stopGhostLoop()
     ghostLoopRunning = false
-    ghostHitting = false
-    ghostTarget = nil
-    candyChecking = false
-    if ghostHeartbeat then ghostHeartbeat:Disconnect(); ghostHeartbeat = nil end
+    ghostHitting     = false
+    ghostTarget      = nil
+    candyChecking    = false
+    if ghostHeartbeat then
+        ghostHeartbeat:Disconnect()
+        ghostHeartbeat = nil
+    end
 end
 
-task.spawn(function()
-    while true do
-        if ENABLED.ghost and getActiveEvent() == "ghost" then
-            if not ghostLoopRunning then startGhostLoop() end
-        else
-            if ghostLoopRunning then stopGhostLoop() end
-        end
-        task.wait(1)
-    end
-end)
-
+-- ============================================================
 -- EGGS
-local collecting = false
+-- ============================================================
 local function collectItem(part, prompt, label, holdDuration)
     if collecting then return false end
     if not part or not part.Parent then return false end
     collecting = true
-    teleportTo(part.Position)
+    teleportTo(part.Position + Vector3.zero)
     task.wait(0.1)
     if prompt then
         firePrompt(prompt, holdDuration or 0)
@@ -415,12 +524,17 @@ local function collectItem(part, prompt, label, holdDuration)
 end
 
 local function runEggs()
+    local found = 0
     for _, obj in ipairs(workspace:GetChildren()) do
-        if obj.Parent == workspace and obj.Name:find("Egg") and not isHoneypot(obj) then
+        if obj.Parent == workspace
+            and obj.Name:find("Egg")
+            and not isHoneypot(obj) then
+
             local part = getBasePart(obj)
             if part and part.Position.Y >= MIN_Y then
                 local prompt = getPrompt(obj)
                 if prompt then
+                    found += 1
                     collectItem(part, prompt, "Egg: " .. obj.Name, 0.25)
                     if not ENABLED.eggs then break end
                 end
@@ -429,40 +543,46 @@ local function runEggs()
     end
 end
 
-task.spawn(function()
-    while true do
-        if ENABLED.eggs and not collecting then task.spawn(runEggs) end
-        task.wait(2)
-    end
-end)
-
+-- ============================================================
 -- SPRING EVENT
+-- ============================================================
 local function claimSpringEvent()
     if not ENABLED.springEvent then return end
+    
     local now = tick()
-    if now - springEventLastExecution < SPRING_EVENT_COOLDOWN then return end
+    if now - springEventLastExecution < SPRING_EVENT_COOLDOWN then
+        return
+    end
+    
     pcall(function()
-        local args = {{ Action = "DeliverQuest", QuestIndex = 1 }}
-        ReplicatedStorage:FindFirstChild("Events"):FindFirstChild("SpecialEvent"):FireServer(unpack(args))
+        local args = {
+            {
+                Action = "DeliverQuest",
+                QuestIndex = 1
+            }
+        }
+        
+        ReplicatedStorage:WaitForChild("Events"):WaitForChild("SpecialEvent"):FireServer(unpack(args))
         springEventExecutionCount += 1
         springEventLastExecution = now
     end)
 end
 
-task.spawn(function()
-    while true do
-        task.wait(1)
-        claimSpringEvent()
-    end
-end)
-
+-- ============================================================
 -- PLAYTIME REWARDS
+-- ============================================================
 local function claimPlaytimeReward()
     if not ENABLED.playtimeRewards then return end
+    
     for index = 1, 9 do
         pcall(function()
-            local args = {{ Action = "ClaimReward", Index = index }}
-            ReplicatedStorage:FindFirstChild("Events"):FindFirstChild("PlaytimeRewardsHandler"):FireServer(unpack(args))
+            local args = {
+                {
+                    Action = "ClaimReward",
+                    Index = index
+                }
+            }
+            ReplicatedStorage:WaitForChild("Events"):WaitForChild("PlaytimeRewardsHandler"):FireServer(unpack(args))
             playtimeRewardCollected += 1
             playtimeRewardIndex = index
         end)
@@ -470,23 +590,122 @@ local function claimPlaytimeReward()
     end
 end
 
-task.spawn(function()
-    while true do
-        task.wait(5)
-        claimPlaytimeReward()
-    end
-end)
-
+-- ============================================================
 -- DAILY SPIN
+-- ============================================================
+local dailySpinLoopActive = false
+
 local function runDailySpin()
     if not ENABLED.dailySpin or not dailySpinLoopActive then return end
     pcall(function()
-        local args = { "spin", "daily" }
-        ReplicatedStorage:FindFirstChild("Events"):FindFirstChild("DailySpin"):FireServer(unpack(args))
+        local args = {
+            "spin",
+            "daily"
+        }
+        ReplicatedStorage:WaitForChild("Events"):WaitForChild("DailySpin"):FireServer(unpack(args))
         dailySpinCount += 1
     end)
 end
 
+-- ============================================================
+-- NOCLIP ENFORCER
+-- ============================================================
+RunService.Stepped:Connect(function()
+    if not character or not humanoid or not humanoid.Parent then return end
+    
+    if ghostLoopRunning or flying then
+        for _, p in ipairs(character:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- MAIN LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if loopActive then continue end
+
+        local activeEvent = getActiveEvent()
+
+        if lastEvent ~= activeEvent then
+            if lastEvent == "ghost" then
+                -- Cleanup from ghost
+            end
+            collecting = false
+            lastEvent = activeEvent
+        end
+
+        if ENABLED.museumDig then
+            if not loopActive then
+                loopActive = true
+                task.spawn(function()
+                    runMuseumDig()
+                    loopActive = false
+                end)
+            end
+        end
+
+        if ENABLED.ghost and not ghostLoopRunning then
+            startGhostLoop()
+        elseif not ENABLED.ghost and ghostLoopRunning then
+            stopGhostLoop()
+        end
+
+        if not collecting and ENABLED.eggs then
+            loopActive = true
+            task.spawn(function()
+                runEggs()
+                loopActive = false
+            end)
+        end
+    end
+end)
+
+-- ============================================================
+-- DEDICATED FLY-OFF LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        local activeEvent = getActiveEvent()
+        if not activeEvent and flying then
+            stopFly()
+        end
+    end
+end)
+
+-- ============================================================
+-- SPRING EVENT LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ENABLED.springEvent then
+            claimSpringEvent()
+        end
+    end
+end)
+
+-- ============================================================
+-- PLAYTIME REWARDS LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if ENABLED.playtimeRewards then
+            claimPlaytimeReward()
+        end
+    end
+end)
+
+-- ============================================================
+-- DAILY SPIN LOOP
+-- ============================================================
 task.spawn(function()
     while true do
         task.wait(1)
@@ -501,238 +720,252 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.8)
-        if dailySpinLoopActive then runDailySpin() end
+        if dailySpinLoopActive then
+            runDailySpin()
+        end
     end
 end)
 
 -- ============================================================
--- UI SECTION - COMPLETELY REBUILT FOR RELIABILITY
+-- UI
 -- ============================================================
-
--- Clear any existing UI
 for _, g in ipairs(playerGui:GetChildren()) do
     if g.Name == "GardenBeeFlyer" then g:Destroy() end
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "GardenBeeFlyer"
-screenGui.ResetOnSpawn = false
+screenGui.Name           = "GardenBeeFlyer"
+screenGui.ResetOnSpawn   = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
+screenGui.IgnoreGuiInset = true
+screenGui.Parent         = playerGui
 
--- Colors
 local COL = {
-    bg = Color3.fromRGB(18, 18, 22),
-    panel = Color3.fromRGB(28, 28, 34),
+    bg     = Color3.fromRGB(18, 18, 22),
+    panel  = Color3.fromRGB(28, 28, 34),
     border = Color3.fromRGB(50, 50, 60),
-    text = Color3.fromRGB(220, 220, 230),
-    muted = Color3.fromRGB(120, 120, 140),
-    green = Color3.fromRGB(34, 197, 94),
-    gray = Color3.fromRGB(70, 70, 85),
+    text   = Color3.fromRGB(220, 220, 230),
+    muted  = Color3.fromRGB(120, 120, 140),
+    green  = Color3.fromRGB(34, 197, 94),
+    gray   = Color3.fromRGB(70, 70, 85),
 }
 
--- Main container with fixed height
 local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 240, 0, 450)
-mainFrame.Position = UDim2.new(0, 15, 0.5, -200)
+mainFrame.Size             = UDim2.new(0, 220, 0, 0)
+mainFrame.Position         = UDim2.new(0, 10, 0.5, -160)
 mainFrame.BackgroundColor3 = COL.bg
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
-
+mainFrame.BorderSizePixel  = 0
+mainFrame.AutomaticSize    = Enum.AutomaticSize.Y
+mainFrame.ClipsDescendants = true
+mainFrame.Parent           = screenGui
 Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
 local stroke = Instance.new("UIStroke")
-stroke.Color = COL.border
-stroke.Thickness = 1
-stroke.Parent = mainFrame
+stroke.Color = COL.border; stroke.Thickness = 1; stroke.Parent = mainFrame
 
--- Scroll frame for content
-local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Name = "ScrollFrame"
-scrollFrame.Size = UDim2.new(1, 0, 1, -40)
-scrollFrame.Position = UDim2.new(0, 0, 0, 40)
-scrollFrame.BackgroundTransparency = 1
-scrollFrame.BorderSizePixel = 0
-scrollFrame.ScrollBarThickness = 0
-scrollFrame.Parent = mainFrame
+local mainList = Instance.new("UIListLayout")
+mainList.SortOrder = Enum.SortOrder.LayoutOrder
+mainList.Padding   = UDim.new(0, 0)
+mainList.Parent    = mainFrame
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 0)
-listLayout.Parent = scrollFrame
-
--- Title bar
-local titleBar = Instance.new("Frame")
-titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 40)
-titleBar.BackgroundColor3 = COL.panel
-titleBar.BorderSizePixel = 0
-titleBar.LayoutOrder = 0
-titleBar.Parent = mainFrame
-
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
-
-local titleText = Instance.new("TextLabel")
-titleText.Text = "Garden Bee Flyer"
-titleText.TextSize = 14
-titleText.Font = Enum.Font.GothamBold
-titleText.TextColor3 = COL.text
-titleText.BackgroundTransparency = 1
-titleText.Position = UDim2.new(0, 15, 0, 0)
-titleText.Size = UDim2.new(0.7, 0, 1, 0)
-titleText.TextXAlignment = Enum.TextXAlignment.Left
-titleText.Parent = titleBar
-
-local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Text = "−"
-minimizeBtn.TextSize = 16
-minimizeBtn.Font = Enum.Font.GothamBold
-minimizeBtn.TextColor3 = COL.muted
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-minimizeBtn.BorderSizePixel = 0
-minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
-minimizeBtn.Position = UDim2.new(1, -35, 0.5, -15)
-minimizeBtn.Parent = titleBar
-Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
-
--- Helper functions
-local function makeSection(title, layoutOrder)
-    local container = Instance.new("Frame")
-    container.Name = title .. "Section"
-    container.Size = UDim2.new(1, 0, 0, 0)
-    container.AutomaticSize = Enum.AutomaticSize.Y
-    container.BackgroundTransparency = 1
-    container.LayoutOrder = layoutOrder
-    container.Parent = scrollFrame
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingLeft = UDim.new(0, 10)
-    padding.PaddingRight = UDim.new(0, 10)
-    padding.PaddingTop = UDim.new(0, 8)
-    padding.PaddingBottom = UDim.new(0, 8)
-    padding.Parent = container
-
-    local layout = Instance.new("UIListLayout")
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, 6)
-    layout.Parent = container
-
-    -- Section title
-    local sectionTitle = Instance.new("TextLabel")
-    sectionTitle.Text = title
-    sectionTitle.TextSize = 10
-    sectionTitle.Font = Enum.Font.GothamBold
-    sectionTitle.TextColor3 = COL.muted
-    sectionTitle.BackgroundTransparency = 1
-    sectionTitle.TextXAlignment = Enum.TextXAlignment.Left
-    sectionTitle.Size = UDim2.new(1, 0, 0, 14)
-    sectionTitle.LayoutOrder = 0
-    sectionTitle.Parent = container
-
-    return container
+local function makeDivider(order)
+    local f = Instance.new("Frame")
+    f.Size             = UDim2.new(1, 0, 0, 1)
+    f.BackgroundColor3 = COL.border
+    f.BorderSizePixel  = 0
+    f.LayoutOrder      = order
+    f.Parent           = mainFrame
 end
 
-local function makeToggle(parent, label, key, layoutOrder)
-    local toggle = Instance.new("Frame")
-    toggle.Size = UDim2.new(1, 0, 0, 32)
-    toggle.BackgroundColor3 = COL.panel
-    toggle.BorderSizePixel = 0
-    toggle.LayoutOrder = layoutOrder
-    toggle.Parent = parent
+local function makeSection(order)
+    local f = Instance.new("Frame")
+    f.Size                   = UDim2.new(1, 0, 0, 0)
+    f.AutomaticSize          = Enum.AutomaticSize.Y
+    f.BackgroundTransparency = 1
+    f.LayoutOrder            = order
+    f.Parent                 = mainFrame
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft   = UDim.new(0, 10)
+    pad.PaddingRight  = UDim.new(0, 10)
+    pad.PaddingTop    = UDim.new(0, 6)
+    pad.PaddingBottom = UDim.new(0, 6)
+    pad.Parent = f
+    local list = Instance.new("UIListLayout")
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding   = UDim.new(0, 4)
+    list.Parent    = f
+    return f
+end
 
-    Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 6)
+local function makeCap(text, parent, order)
+    local l = Instance.new("TextLabel")
+    l.Text                   = text
+    l.TextSize               = 10
+    l.Font                   = Enum.Font.GothamBold
+    l.TextColor3             = COL.muted
+    l.BackgroundTransparency = 1
+    l.TextXAlignment         = Enum.TextXAlignment.Left
+    l.Size                   = UDim2.new(1, 0, 0, 14)
+    l.LayoutOrder            = order
+    l.Parent                 = parent
+    return l
+end
 
-    local label_text = Instance.new("TextLabel")
-    label_text.Text = label
-    label_text.TextSize = 12
-    label_text.Font = Enum.Font.GothamMedium
-    label_text.TextColor3 = COL.text
-    label_text.BackgroundTransparency = 1
-    label_text.TextXAlignment = Enum.TextXAlignment.Left
-    label_text.Position = UDim2.new(0, 10, 0, 0)
-    label_text.Size = UDim2.new(0.6, 0, 1, 0)
-    label_text.Parent = toggle
+local function makeToggleRow(label, key, parent, order)
+    local row = Instance.new("Frame")
+    row.Size             = UDim2.new(1, 0, 0, 26)
+    row.BackgroundColor3 = COL.panel
+    row.BorderSizePixel  = 0
+    row.LayoutOrder      = order
+    row.Parent           = parent
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
 
-    local toggleBg = Instance.new("Frame")
-    toggleBg.Size = UDim2.new(0, 38, 0, 20)
-    toggleBg.Position = UDim2.new(1, -48, 0.5, -10)
-    toggleBg.BackgroundColor3 = ENABLED[key] and COL.green or COL.gray
-    toggleBg.BorderSizePixel = 0
-    toggleBg.Parent = toggle
+    local lbl = Instance.new("TextLabel")
+    lbl.Text                   = label
+    lbl.TextSize               = 12
+    lbl.Font                   = Enum.Font.GothamMedium
+    lbl.TextColor3             = COL.text
+    lbl.BackgroundTransparency = 1
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    lbl.Position               = UDim2.new(0, 8, 0, 0)
+    lbl.Size                   = UDim2.new(1, -50, 1, 0)
+    lbl.Parent                 = row
 
-    Instance.new("UICorner", toggleBg).CornerRadius = UDim.new(1, 0)
+    local togBg = Instance.new("Frame")
+    togBg.Size             = UDim2.new(0, 32, 0, 17)
+    togBg.Position         = UDim2.new(1, -38, 0.5, -8)
+    togBg.BackgroundColor3 = ENABLED[key] and COL.green or COL.gray
+    togBg.BorderSizePixel  = 0
+    togBg.Parent           = row
+    Instance.new("UICorner", togBg).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 16, 0, 16)
-    knob.Position = ENABLED[key] and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+    knob.Size             = UDim2.new(0, 13, 0, 13)
+    knob.Position         = ENABLED[key]
+        and UDim2.new(1, -15, 0.5, -6)
+        or  UDim2.new(0,  2,  0.5, -6)
     knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    knob.BorderSizePixel = 0
-    knob.Parent = toggleBg
-
+    knob.BorderSizePixel  = 0
+    knob.Parent           = togBg
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(1, 0, 1, 0)
-    button.BackgroundTransparency = 1
-    button.Text = ""
-    button.Parent = toggle
+    local btn = Instance.new("TextButton")
+    btn.Size                   = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text                   = ""
+    btn.Parent                 = row
 
-    button.MouseButton1Click:Connect(function()
+    btn.MouseButton1Click:Connect(function()
         ENABLED[key] = not ENABLED[key]
-        local isOn = ENABLED[key]
-        TweenService:Create(toggleBg, TweenInfo.new(0.2), { BackgroundColor3 = isOn and COL.green or COL.gray }):Play()
-        TweenService:Create(knob, TweenInfo.new(0.2), { Position = isOn and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8) }):Play()
+        local on = ENABLED[key]
+        TweenService:Create(togBg, TweenInfo.new(0.15), {
+            BackgroundColor3 = on and COL.green or COL.gray
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.15), {
+            Position = on
+                and UDim2.new(1, -15, 0.5, -6)
+                or  UDim2.new(0,  2,  0.5, -6)
+        }):Play()
+        if key == "ghost" and not on then stopGhostLoop() end
     end)
 end
 
--- Build UI sections
-local eventSection = makeSection("EVENTS", 1)
-makeToggle(eventSection, "Museum Digpile", "museumDig", 1)
-makeToggle(eventSection, "Ghost", "ghost", 2)
-makeToggle(eventSection, "Eggs", "eggs", 3)
-makeToggle(eventSection, "Spring Event", "springEvent", 4)
+-- Titlebar
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 34)
+titleBar.BackgroundColor3 = COL.panel
+titleBar.BorderSizePixel  = 0
+titleBar.LayoutOrder      = 0
+titleBar.Parent           = mainFrame
 
-local spinSection = makeSection("SPINS", 2)
-makeToggle(spinSection, "Daily Spin", "dailySpin", 1)
-makeToggle(spinSection, "Playtime Rewards", "playtimeRewards", 2)
+local dot = Instance.new("Frame")
+dot.Size             = UDim2.new(0, 7, 0, 7)
+dot.Position         = UDim2.new(0, 10, 0.5, -3)
+dot.BackgroundColor3 = COL.green
+dot.BorderSizePixel  = 0
+dot.Parent           = titleBar
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
--- Minimize functionality
-local isMinimized = false
-minimizeBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    minimizeBtn.Text = isMinimized and "+" or "−"
-    scrollFrame.Visible = not isMinimized
-    if isMinimized then
-        mainFrame.Size = UDim2.new(0, 240, 0, 40)
-    else
-        mainFrame.Size = UDim2.new(0, 240, 0, 450)
-    end
-end)
+local titleTxt = Instance.new("TextLabel")
+titleTxt.Text                   = "Garden Bee Flyer v1.2"
+titleTxt.TextSize               = 13
+titleTxt.Font                   = Enum.Font.GothamBold
+titleTxt.TextColor3             = COL.text
+titleTxt.BackgroundTransparency = 1
+titleTxt.TextXAlignment         = Enum.TextXAlignment.Left
+titleTxt.Position               = UDim2.new(0, 24, 0, 0)
+titleTxt.Size                   = UDim2.new(1, -60, 1, 0)
+titleTxt.Parent                 = titleBar
 
--- Drag functionality
-local dragging = false
-local dragStart = nil
-local dragPos = nil
+local hideBtn = Instance.new("TextButton")
+hideBtn.Text             = "—"
+hideBtn.TextSize         = 12
+hideBtn.Font             = Enum.Font.GothamBold
+hideBtn.TextColor3       = COL.muted
+hideBtn.BackgroundColor3 = COL.bg
+hideBtn.BorderSizePixel  = 0
+hideBtn.Size             = UDim2.new(0, 24, 0, 20)
+hideBtn.Position         = UDim2.new(1, -30, 0.5, -10)
+hideBtn.Parent           = titleBar
+Instance.new("UICorner", hideBtn).CornerRadius = UDim.new(0, 5)
 
+local dragging, dragStart, startPos
 titleBar.InputBegan:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = inp.Position
-        dragPos = mainFrame.Position
+        dragging = true; dragStart = inp.Position; startPos = mainFrame.Position
     end
 end)
-
 UserInputService.InputChanged:Connect(function(inp)
     if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = inp.Position - dragStart
-        mainFrame.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + delta.X, dragPos.Y.Scale, dragPos.Y.Offset + delta.Y)
+        local d = inp.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
     end
 end)
-
 UserInputService.InputEnded:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
-print("[Garden Bee Flyer v2.3] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v2.3] ✓ UI should be visible in top-left corner")
-print("[Garden Bee Flyer v2.3] ✓ Museum Digpile and Ghost toggles active")
+local collapsed = false
+local collapsible = {}
+hideBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    for _, f in ipairs(collapsible) do f.Visible = not collapsed end
+    hideBtn.Text = collapsed and "+" or "—"
+end)
+
+-- Status
+local statusSec = makeSection(1); table.insert(collapsible, statusSec)
+makeCap("STATUS", statusSec, 0)
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Text                   = "[Ready]"
+statusLbl.TextSize               = 11
+statusLbl.Font                   = Enum.Font.Gotham
+statusLbl.TextColor3             = COL.green
+statusLbl.BackgroundTransparency = 1
+statusLbl.TextXAlignment         = Enum.TextXAlignment.Left
+statusLbl.TextWrapped            = true
+statusLbl.Size                   = UDim2.new(1, 0, 0, 28)
+statusLbl.LayoutOrder            = 1
+statusLbl.Parent                 = statusSec
+makeDivider(2)
+
+-- Events toggles
+local evSec = makeSection(3); table.insert(collapsible, evSec)
+makeCap("EVENTS", evSec, 0)
+makeToggleRow("Museum Digpile", "museumDig", evSec, 1)
+makeToggleRow("Ghost",          "ghost",     evSec, 2)
+makeToggleRow("Eggs",           "eggs",      evSec, 3)
+makeToggleRow("Spring Event",   "springEvent", evSec, 4)
+makeDivider(4)
+
+-- Spins toggles
+local spinSec = makeSection(5); table.insert(collapsible, spinSec)
+makeCap("SPINS", spinSec, 0)
+makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
+makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
+makeDivider(6)
+
+print("[Garden Bee Flyer v1.2] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.2] ✓ Museum Digpile, Ghost, Eggs, Spring Event active")
