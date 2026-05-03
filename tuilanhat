@@ -1,7 +1,6 @@
--- Garden Bee Flyer v1.2 - MUSEUM DIGPILE + GHOST + EGGS
--- Removed: Arcade, Tickets, Arcade Rolls, Taco Farm
--- Added: Museum Digpile Auto-Farm
--- Based on v1.1 (proven working ghost system)
+-- Garden Bee Flyer v1.3 - MUSEUM DIGPILE (PROPER AUTOMATION)
+-- Based on actual game mechanics from Client_Dig
+-- Museum Digpile auto-farm: PlayDigVFX → StageReached (1-7) → CompleteDig
 -- Inject via executor
 
 local Players = game:GetService("Players")
@@ -232,7 +231,8 @@ local loopActive = false
 local lastEvent  = nil
 
 -- ============================================================
--- MUSEUM DIGPILE SYSTEM
+-- MUSEUM DIGPILE AUTOMATION
+-- Sequence: PlayDigVFX → StageReached (1-7) → CompleteDig
 -- ============================================================
 local diggingActive = false
 
@@ -266,36 +266,40 @@ local function digPile(pile)
     
     diggingActive = true
     
-    -- Teleport to the digpile
+    -- Step 1: Teleport to the digpile
     if not flying then startFly() end
-    teleportTo(pile.part.Position + Vector3.new(0, 2, 0))
-    task.wait(0.3)
+    teleportTo(pile.part.Position + Vector3.new(0, 2.5, 0))
+    task.wait(0.4)
     
-    -- Fire the proximity prompt to start the minigame
+    -- Step 2: Fire proximity prompt to initiate the minigame
     firePrompt(pile.prompt, 0)
-    task.wait(0.6)
+    task.wait(0.7)
     
-    -- Fire PlayDigVFX to start the dig animation
+    -- Step 3: Fire PlayDigVFX - starts the dig animation and visual effect
     pcall(function()
         digRemote:FireServer("PlayDigVFX", pile.name)
     end)
-    task.wait(0.3)
+    task.wait(0.2)
     
-    -- Send StageReached for stages 1-7 (simulates clicking the green square 7 times)
+    -- Step 4: Fire StageReached for stages 1-7
+    -- Based on the game mechanics, progress fills up and triggers StageReached at thresholds
+    -- We simulate all 7 stages with appropriate timing
     for stage = 1, 7 do
         if not ENABLED.museumDig then break end
         pcall(function()
             digRemote:FireServer("StageReached", pile.name, stage)
         end)
-        task.wait(0.25)  -- Timing between stage clicks
+        task.wait(0.15)  -- Timing between stages (simulates progress filling)
     end
     
-    -- Send CompleteDig to finish the dig and claim rewards
+    -- Step 5: Fire CompleteDig when progress reaches 100%
+    -- This claims the reward and completes the dig
+    task.wait(0.2)
     pcall(function()
         digRemote:FireServer("CompleteDig", pile.name)
     end)
     
-    task.wait(1.5)
+    task.wait(1.5)  -- Wait for completion and cleanup
     diggingActive = false
 end
 
@@ -894,7 +898,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.2"
+titleTxt.Text                   = "Garden Bee Flyer v1.3"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -975,5 +979,5 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.2] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.2] ✓ Museum Digpile, Ghost, Eggs, Spring Event active")
+print("[Garden Bee Flyer v1.3] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.3] Museum Digpile: PlayDigVFX → StageReached (1-7) → CompleteDig")
