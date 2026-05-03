@@ -818,14 +818,12 @@ local function startGhostLoop()
                         local candyBefore = getCandyCount()
                         pcall(function() swatterRemote:FireServer() end)
                         task.spawn(function()
-                            task.wait(1)
                             local candyAfter = getCandyCount()
                             if candyAfter > candyBefore then
                                 if logFn  then logFn("[Ghost] Candy obtained! Next ghost in 3s.", "ok") end
                                 if debugFn then debugFn("[DBG] Candy: " .. candyBefore .. " -> " .. candyAfter, "ok") end
                                 ghostHitting = false
                                 ghostTarget  = nil
-                                task.wait(3)
                             else
                                 if debugFn then debugFn("[DBG] Candy unchanged: " .. candyAfter, "info") end
                             end
