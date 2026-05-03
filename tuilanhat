@@ -500,7 +500,7 @@ local function startTicketWatcher()
                         seenTickets[t.part] = true
                         if logFn then logFn("[Watcher] New ticket detected!", "ok") end
                         flyToTicket(t.part, t.prompt)
-                        task.wait(jitter(5, 1))
+                        task.wait(jitter(2, 0.5))
                         collectOrbs()
                     end
                 end
