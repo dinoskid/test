@@ -281,49 +281,37 @@ local function digPile(pile)
     teleportTo(pile.part.Position + Vector3.zero)
     
     if bv then bv.Velocity = Vector3.zero end
-    local settle = jitter(0.5, 0.1)
-    task.wait(settle)
+    task.wait(jitter(0.5, 0.1))
     
-    -- Fire the proximity prompt to start the minigame (integrated UI)
+    -- Fire the proximity prompt to start the minigame
     if pile.part and pile.part.Parent and pile.prompt then
-        local ok, err = pcall(function() fireproximityprompt(pile.prompt, 0) end)
-        local confirm = jitter(0.5, 0.3)
-        task.wait(confirm)
+        pcall(function() fireproximityprompt(pile.prompt, 0) end)
+        task.wait(jitter(0.5, 0.3))
         
-        -- Fire PlayDigVFX to initialize the dig
+        -- Start the dig VFX
         pcall(function()
             digRemote:FireServer("PlayDigVFX", pile.name)
         end)
         
-        -- Wait for minigame UI to load and slider to start moving
-        task.wait(jitter(0.8, 0.2))
+        -- Shorter wait before sending stages
+        task.wait(jitter(0.6, 0.2))
         
-        -- SPAM StageReached continuously with better timing
-        -- Slower spam rate (0.25-0.3s) gives slider time to move and increases chance of hitting green zone
-        -- Still rapid enough to fill progress bar, but not so fast we miss the zone
-        local maxAttempts = 50  -- 50 attempts at 0.27s average = ~13.5 seconds of clicking
-        for attempt = 1, maxAttempts do
+        -- Send StageReached for stages 1 through 7
+        -- Use very short delay (0.09-0.13 sec) to prevent server drops
+        for stage = 1, 7 do
             if not ENABLED.museumDig then break end
-            
-            -- Cycle through stages 1-7 repeatedly
-            local stage = ((attempt - 1) % 7) + 1
-            
-            -- Fire the stage reached
             pcall(function()
                 digRemote:FireServer("StageReached", pile.name, stage)
             end)
-            
-            -- Medium delay between clicks (0.24-0.30s) - gives slider time to move and reset position
-            -- Better chance of hitting green zone compared to ultra-rapid spam
-            task.wait(jitter(0.27, 0.03))
+            task.wait(jitter(0.11, 0.02))  -- 0.09-0.13 seconds
         end
         
-        -- After spamming StageReached many times, fire CompleteDig to finish and claim reward
+        -- Immediately complete
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
         
-        task.wait(jitter(2, 1))  -- Wait for completion and reward animation
+        task.wait(jitter(1.5, 0.5))
     end
     
     diggingActive = false
@@ -925,7 +913,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.4"
+titleTxt.Text                   = "Garden Bee Flyer v1.6"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -1006,6 +994,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.4] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.4] Museum Digpile: Teleport → Prompt → PlayDigVFX → StageReached (1-7) → CompleteDig")
-print("[Garden Bee Flyer v1.4] Using ticket system logic with jitter delays")
+print("[Garden Bee Flyer v1.6] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.6] Museum Digpile: Teleport → Prompt → PlayDigVFX → Fast StageReached (0.11s) → CompleteDig")
+print("[Garden Bee Flyer v1.6] Safety hardened - prevents server drops and progress bar resets")
