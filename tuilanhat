@@ -7,7 +7,7 @@ local Players = game:GetService("Players")
 
 local player
 repeat
-    task.wait(10)
+    task.wait(5)
     player = Players.LocalPlayer
 until player
 
