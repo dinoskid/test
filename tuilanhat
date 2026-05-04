@@ -232,8 +232,7 @@ local lastEvent  = nil
 
 -- ============================================================
 -- MUSEUM DIGPILE AUTOMATION (Index-Based + Teleport System)
--- Sequence: Teleport → Fire Prompt → PlayDigVFX → StageReached (1-7) → CompleteDig
--- Uses same logic as ticket system with jitter and proper timing
+-- Detects when pile disappears from workspace, like ticket/ghost system
 -- ============================================================
 local diggingActive = false
 
@@ -250,7 +249,7 @@ local function findDigPiles()
                 primary = child:FindFirstChildWhichIsA("BasePart")
             end
             if primary then
-                -- Get ProximityPrompt from PrimaryPart (like workspace.Events:GetChildren()[9].PrimaryPart.ProximityPrompt)
+                -- Get ProximityPrompt from PrimaryPart
                 local prompt = primary:FindFirstChild("ProximityPrompt")
                 if not prompt then
                     prompt = primary:FindFirstChildWhichIsA("ProximityPrompt")
@@ -296,8 +295,7 @@ local function digPile(pile)
         -- Wait for minigame UI to fully load
         task.wait(jitter(0.8, 0.2))
         
-        -- OPTIMIZED CLICK LOOP: Click whenever slider is inside green zone
-        -- Uses VirtualInputManager with viewport-based positioning
+        -- Get UI elements for clicking
         local playerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
         
         local function getSliderAndGreenZone()
@@ -322,8 +320,7 @@ local function digPile(pile)
             local barWidth = sliderBar.Size.X.Scale
             
             local left = barCenter - (barWidth / 2)
-            -- Only check LEFT CORNER (left edge + 5% tolerance)
-            local leftCornerEnd = left + (barWidth * 0.1)  -- 10% of zone width from left edge
+            local leftCornerEnd = left + (barWidth * 0.1)
             
             return sliderPos >= left and sliderPos <= leftCornerEnd
         end
@@ -335,38 +332,32 @@ local function digPile(pile)
             local centerY = viewport.Y / 2
             
             pcall(function()
-                -- Press
                 VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
                 task.wait(0.01)
-                -- Release
                 VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
             end)
         end
         
-        -- Simple click loop - keep clicking whenever slider is in left corner until dig completes
+        -- Click loop - continue clicking until pile disappears (dig complete)
         local lastClick = 0
-        local clickCooldown = 0.05  -- 50ms between clicks minimum
-        local maxAttempts = 100  -- Safety limit: max 100 click attempts
-        local attempts = 0
+        local clickCooldown = 0.05
         
-        while attempts < maxAttempts and ENABLED.museumDig do
+        while ENABLED.museumDig and pile.part and pile.part.Parent do
             if isSliderInsideGreenZone() and (tick() - lastClick) >= clickCooldown then
                 clickAtScreenCenter()
                 lastClick = tick()
-                attempts = attempts + 1
             end
-            task.wait(0.02)  -- 50 checks per second
+            task.wait(0.02)
         end
         
-        -- Wait a moment for progress to settle and dig to fully complete
+        -- Pile is gone - dig complete
         task.wait(jitter(1, 0.3))
         
-        -- Complete the dig and claim the reward
+        -- Fire CompleteDig to claim reward
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
         
-        -- Wait for reward animation and UI to disappear
         task.wait(jitter(2, 0.5))
     end
     
@@ -380,7 +371,7 @@ local function runMuseumDig()
             if not ENABLED.museumDig then break end
             if pile.part and pile.part.Parent then
                 digPile(pile)
-                task.wait(jitter(3, 1.5))  -- Longer delay between piles (1.5-4.5 seconds) to ensure proper reset
+                task.wait(jitter(3, 1.5))
             end
         end
     end
@@ -969,7 +960,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.14"
+titleTxt.Text                   = "Garden Bee Flyer v1.17"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -1050,6 +1041,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.14] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.14] Museum Digpile: No timeout - click until dig naturally completes!")
-print("[Garden Bee Flyer v1.14] Cleaner logic + proper multi-pile support")
+print("[Garden Bee Flyer v1.17] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.17] Museum Digpile: Detects when pile disappears - instant teleport!")
+print("[Garden Bee Flyer v1.17] Same system as tickets/ghost - clean & efficient")
