@@ -322,9 +322,10 @@ local function digPile(pile)
             local barWidth = sliderBar.Size.X.Scale
             
             local left = barCenter - (barWidth / 2)
-            local right = barCenter + (barWidth / 2)
+            -- Only check LEFT CORNER (left edge + 5% tolerance)
+            local leftCornerEnd = left + (barWidth * 0.1)  -- 10% of zone width from left edge
             
-            return sliderPos >= left and sliderPos <= right
+            return sliderPos >= left and sliderPos <= leftCornerEnd
         end
         
         local function clickAtScreenCenter()
@@ -342,28 +343,31 @@ local function digPile(pile)
             end)
         end
         
-        -- Monitoring loop - click whenever slider is in green zone
-        local timeout = tick() + 25  -- 25 second timeout
+        -- Simple click loop - keep clicking whenever slider is in left corner until dig completes
         local lastClick = 0
         local clickCooldown = 0.05  -- 50ms between clicks minimum
+        local maxAttempts = 100  -- Safety limit: max 100 click attempts
+        local attempts = 0
         
-        while tick() < timeout and ENABLED.museumDig do
+        while attempts < maxAttempts and ENABLED.museumDig do
             if isSliderInsideGreenZone() and (tick() - lastClick) >= clickCooldown then
                 clickAtScreenCenter()
                 lastClick = tick()
+                attempts = attempts + 1
             end
             task.wait(0.02)  -- 50 checks per second
         end
         
-        -- Wait a moment for progress to settle
-        task.wait(jitter(0.5, 0.2))
+        -- Wait a moment for progress to settle and dig to fully complete
+        task.wait(jitter(1, 0.3))
         
         -- Complete the dig and claim the reward
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
         
-        task.wait(jitter(1.5, 0.5))
+        -- Wait for reward animation and UI to disappear
+        task.wait(jitter(2, 0.5))
     end
     
     diggingActive = false
@@ -376,7 +380,7 @@ local function runMuseumDig()
             if not ENABLED.museumDig then break end
             if pile.part and pile.part.Parent then
                 digPile(pile)
-                task.wait(jitter(2, 1))  -- Delay between piles like ticket system (2-3 seconds)
+                task.wait(jitter(3, 1.5))  -- Longer delay between piles (1.5-4.5 seconds) to ensure proper reset
             end
         end
     end
@@ -965,7 +969,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.11"
+titleTxt.Text                   = "Garden Bee Flyer v1.14"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -1046,6 +1050,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.11] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.11] Museum Digpile: VirtualInputManager clicks when slider in green zone")
-print("[Garden Bee Flyer v1.11] Optimized from open-source Fisch script approach!")
+print("[Garden Bee Flyer v1.14] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.14] Museum Digpile: No timeout - click until dig naturally completes!")
+print("[Garden Bee Flyer v1.14] Cleaner logic + proper multi-pile support")
