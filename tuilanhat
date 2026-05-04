@@ -292,9 +292,6 @@ local function digPile(pile)
             digRemote:FireServer("PlayDigVFX", pile.name)
         end)
         
-        -- Wait for minigame UI to fully load
-        task.wait(jitter(0.8, 0.2))
-        
         -- Get UI elements for clicking
         local playerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
         
@@ -350,15 +347,12 @@ local function digPile(pile)
             task.wait(0.02)
         end
         
-        -- Pile is gone - dig complete
-        task.wait(jitter(1, 0.3))
         
         -- Fire CompleteDig to claim reward
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
-        
-        task.wait(jitter(2, 0.5))
+
     end
     
     diggingActive = false
@@ -371,7 +365,6 @@ local function runMuseumDig()
             if not ENABLED.museumDig then break end
             if pile.part and pile.part.Parent then
                 digPile(pile)
-                task.wait(jitter(3, 1.5))
             end
         end
     end
