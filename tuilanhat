@@ -7,7 +7,7 @@ local Players = game:GetService("Players")
 
 local player
 repeat
-    task.wait(5)
+    task.wait(10)
     player = Players.LocalPlayer
 until player
 
@@ -325,13 +325,15 @@ local function digPile(pile)
         local function clickAtScreenCenter()
             local VirtualInputManager = game:GetService("VirtualInputManager")
             local viewport = workspace.CurrentCamera.ViewportSize
-            local centerX = viewport.X / 2
-            local centerY = viewport.Y / 2
+            
+            -- Click bottom right of Roblox window (with small offset)
+            local screenX = viewport.X - 50
+            local screenY = viewport.Y - 50
             
             pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+                VirtualInputManager:SendMouseButtonEvent(screenX, screenY, 0, true, game, 0)
                 task.wait(0.01)
-                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
+                VirtualInputManager:SendMouseButtonEvent(screenX, screenY, 0, false, game, 0)
             end)
         end
         
@@ -1033,6 +1035,11 @@ makeCap("SPINS", spinSec, 0)
 makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
+
+-- Start with GUI collapsed after all sections are added
+collapsed = true
+for _, f in ipairs(collapsible) do f.Visible = false end
+hideBtn.Text = "+"
 
 print("[Garden Bee Flyer v1.17] ✓ Loaded successfully!")
 print("[Garden Bee Flyer v1.17] Museum Digpile: Detects when pile disappears - instant teleport!")
