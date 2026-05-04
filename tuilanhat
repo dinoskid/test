@@ -296,99 +296,63 @@ local function digPile(pile)
         -- Wait for minigame UI to fully load
         task.wait(jitter(0.8, 0.2))
         
-        -- SMART CLICK: Only click 1-2 times when slider reaches the LEFT CORNER of green zone
-        local UserInputService = game:GetService("UserInputService")
+        -- OPTIMIZED CLICK LOOP: Click whenever slider is inside green zone
+        -- Uses VirtualInputManager with viewport-based positioning
         local playerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
         
-        -- Click methods with fallback
-        local method1 = function()
-            for _, conn in pairs(getconnections(UserInputService.InputBegan)) do
-                conn:Fire({UserInputType = Enum.UserInputType.MouseButton1, Position = Vector2.new(500, 500)}, false)
-            end
-        end
-        
-        local method2 = function()
-            local VirtualInput = game:GetService("VirtualInput")
-            VirtualInput:SendMouseButtonEvent(500, 500, true)
-            task.wait(0.01)
-            VirtualInput:SendMouseButtonEvent(500, 500, false)
-        end
-        
-        local method3 = function()
-            if mouse1press and mouse1release then
-                mouse1press()
-                task.wait(0.01)
-                mouse1release()
-            end
-        end
-        
-        -- Function to check if slider is at the LEFT EDGE of green zone
-        local function isSliderAtLeftEdge(tolerance)
+        local function getSliderAndGreenZone()
             local main = playerGui:FindFirstChild("Main")
-            if not main then return false end
-            
+            if not main then return nil, nil end
             local inventory = main:FindFirstChild("Inventory")
-            if not inventory then return false end
+            if not inventory then return nil, nil end
+            local digUI = inventory:FindFirstChild("DigInteraction")
+            if not digUI then return nil, nil end
             
-            local digInteraction = inventory:FindFirstChild("DigInteraction")
-            if not digInteraction then return false end
-            
-            local slider = digInteraction:FindFirstChild("Slider")
-            local sliderBar = digInteraction:FindFirstChild("SliderBar")
-            
+            local slider = digUI:FindFirstChild("Slider")
+            local sliderBar = digUI:FindFirstChild("SliderBar")
+            return slider, sliderBar
+        end
+        
+        local function isSliderInsideGreenZone()
+            local slider, sliderBar = getSliderAndGreenZone()
             if not slider or not sliderBar then return false end
             
-            -- Get slider position and left edge of green zone
             local sliderPos = slider.Position.X.Scale
             local barCenter = sliderBar.Position.X.Scale
             local barWidth = sliderBar.Size.X.Scale
             
-            local leftEdge = barCenter - (barWidth / 2)
-            tolerance = tolerance or 0.03  -- Small tolerance (3% of bar width)
+            local left = barCenter - (barWidth / 2)
+            local right = barCenter + (barWidth / 2)
             
-            -- Check if slider is within tolerance of the left edge
-            return sliderPos >= leftEdge and sliderPos <= (leftEdge + tolerance)
+            return sliderPos >= left and sliderPos <= right
         end
         
-        -- Monitor and click only when slider reaches left corner
-        local clickMethod = nil
-        local maxDuration = 25  -- Max 25 seconds
-        local startTime = tick()
-        local clickCount = 0
-        local maxClicks = 2  -- Only click 1-2 times
-        local waitingForNewEntry = false
+        local function clickAtScreenCenter()
+            local VirtualInputManager = game:GetService("VirtualInputManager")
+            local viewport = workspace.CurrentCamera.ViewportSize
+            local centerX = viewport.X / 2
+            local centerY = viewport.Y / 2
+            
+            pcall(function()
+                -- Press
+                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+                task.wait(0.01)
+                -- Release
+                VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
+            end)
+        end
         
-        while diggingActive and (tick() - startTime) < maxDuration and clickCount < maxClicks do
-            if not ENABLED.museumDig then break end
-            
-            -- Check if slider is at left edge
-            if isSliderAtLeftEdge() then
-                if not waitingForNewEntry then
-                    -- Click!
-                    pcall(function()
-                        if clickMethod == nil then
-                            if pcall(method1) then clickMethod = 1
-                            elseif pcall(method2) then clickMethod = 2
-                            elseif pcall(method3) then clickMethod = 3
-                            end
-                        else
-                            if clickMethod == 1 then method1()
-                            elseif clickMethod == 2 then method2()
-                            elseif clickMethod == 3 then method3()
-                            end
-                        end
-                    end)
-                    
-                    clickCount = clickCount + 1
-                    waitingForNewEntry = true  -- Wait for slider to move away before next click
-                    task.wait(jitter(0.2, 0.05))  -- Small delay between the 1-2 clicks
-                end
-            else
-                -- Slider moved away from left edge, allow next click entry
-                waitingForNewEntry = false
+        -- Monitoring loop - click whenever slider is in green zone
+        local timeout = tick() + 25  -- 25 second timeout
+        local lastClick = 0
+        local clickCooldown = 0.05  -- 50ms between clicks minimum
+        
+        while tick() < timeout and ENABLED.museumDig do
+            if isSliderInsideGreenZone() and (tick() - lastClick) >= clickCooldown then
+                clickAtScreenCenter()
+                lastClick = tick()
             end
-            
-            task.wait(0.01)  -- Check position frequently
+            task.wait(0.02)  -- 50 checks per second
         end
         
         -- Wait a moment for progress to settle
@@ -1001,7 +965,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.10"
+titleTxt.Text                   = "Garden Bee Flyer v1.11"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -1082,6 +1046,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.10] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.10] Museum Digpile: Minimal clicks (1-2) only when slider reaches LEFT CORNER of green zone")
-print("[Garden Bee Flyer v1.10] Maximum efficiency + natural behavior")
+print("[Garden Bee Flyer v1.11] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.11] Museum Digpile: VirtualInputManager clicks when slider in green zone")
+print("[Garden Bee Flyer v1.11] Optimized from open-source Fisch script approach!")
