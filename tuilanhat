@@ -276,7 +276,7 @@ local function digPile(pile)
     
     diggingActive = true
     
-    -- Teleport directly above the digpile (same as ticket system)
+    -- Teleport directly above the digpile
     if not flying then startFly() end
     teleportTo(pile.part.Position + Vector3.zero)
     
@@ -293,20 +293,108 @@ local function digPile(pile)
             digRemote:FireServer("PlayDigVFX", pile.name)
         end)
         
-        -- Shorter wait before sending stages
-        task.wait(jitter(0.6, 0.2))
+        -- Wait for minigame UI to fully load
+        task.wait(jitter(0.8, 0.2))
         
-        -- Send StageReached for stages 1 through 7
-        -- Use very short delay (0.09-0.13 sec) to prevent server drops
-        for stage = 1, 7 do
-            if not ENABLED.museumDig then break end
-            pcall(function()
-                digRemote:FireServer("StageReached", pile.name, stage)
-            end)
-            task.wait(jitter(0.11, 0.02))  -- 0.09-0.13 seconds
+        -- SMART CLICK: Only click 1-2 times when slider reaches the LEFT CORNER of green zone
+        local UserInputService = game:GetService("UserInputService")
+        local playerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+        
+        -- Click methods with fallback
+        local method1 = function()
+            for _, conn in pairs(getconnections(UserInputService.InputBegan)) do
+                conn:Fire({UserInputType = Enum.UserInputType.MouseButton1, Position = Vector2.new(500, 500)}, false)
+            end
         end
         
-        -- Immediately complete
+        local method2 = function()
+            local VirtualInput = game:GetService("VirtualInput")
+            VirtualInput:SendMouseButtonEvent(500, 500, true)
+            task.wait(0.01)
+            VirtualInput:SendMouseButtonEvent(500, 500, false)
+        end
+        
+        local method3 = function()
+            if mouse1press and mouse1release then
+                mouse1press()
+                task.wait(0.01)
+                mouse1release()
+            end
+        end
+        
+        -- Function to check if slider is at the LEFT EDGE of green zone
+        local function isSliderAtLeftEdge(tolerance)
+            local main = playerGui:FindFirstChild("Main")
+            if not main then return false end
+            
+            local inventory = main:FindFirstChild("Inventory")
+            if not inventory then return false end
+            
+            local digInteraction = inventory:FindFirstChild("DigInteraction")
+            if not digInteraction then return false end
+            
+            local slider = digInteraction:FindFirstChild("Slider")
+            local sliderBar = digInteraction:FindFirstChild("SliderBar")
+            
+            if not slider or not sliderBar then return false end
+            
+            -- Get slider position and left edge of green zone
+            local sliderPos = slider.Position.X.Scale
+            local barCenter = sliderBar.Position.X.Scale
+            local barWidth = sliderBar.Size.X.Scale
+            
+            local leftEdge = barCenter - (barWidth / 2)
+            tolerance = tolerance or 0.03  -- Small tolerance (3% of bar width)
+            
+            -- Check if slider is within tolerance of the left edge
+            return sliderPos >= leftEdge and sliderPos <= (leftEdge + tolerance)
+        end
+        
+        -- Monitor and click only when slider reaches left corner
+        local clickMethod = nil
+        local maxDuration = 25  -- Max 25 seconds
+        local startTime = tick()
+        local clickCount = 0
+        local maxClicks = 2  -- Only click 1-2 times
+        local waitingForNewEntry = false
+        
+        while diggingActive and (tick() - startTime) < maxDuration and clickCount < maxClicks do
+            if not ENABLED.museumDig then break end
+            
+            -- Check if slider is at left edge
+            if isSliderAtLeftEdge() then
+                if not waitingForNewEntry then
+                    -- Click!
+                    pcall(function()
+                        if clickMethod == nil then
+                            if pcall(method1) then clickMethod = 1
+                            elseif pcall(method2) then clickMethod = 2
+                            elseif pcall(method3) then clickMethod = 3
+                            end
+                        else
+                            if clickMethod == 1 then method1()
+                            elseif clickMethod == 2 then method2()
+                            elseif clickMethod == 3 then method3()
+                            end
+                        end
+                    end)
+                    
+                    clickCount = clickCount + 1
+                    waitingForNewEntry = true  -- Wait for slider to move away before next click
+                    task.wait(jitter(0.2, 0.05))  -- Small delay between the 1-2 clicks
+                end
+            else
+                -- Slider moved away from left edge, allow next click entry
+                waitingForNewEntry = false
+            end
+            
+            task.wait(0.01)  -- Check position frequently
+        end
+        
+        -- Wait a moment for progress to settle
+        task.wait(jitter(0.5, 0.2))
+        
+        -- Complete the dig and claim the reward
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
@@ -913,7 +1001,7 @@ dot.Parent           = titleBar
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local titleTxt = Instance.new("TextLabel")
-titleTxt.Text                   = "Garden Bee Flyer v1.6"
+titleTxt.Text                   = "Garden Bee Flyer v1.10"
 titleTxt.TextSize               = 13
 titleTxt.Font                   = Enum.Font.GothamBold
 titleTxt.TextColor3             = COL.text
@@ -994,6 +1082,6 @@ makeToggleRow("Daily Spin",       "dailySpin", spinSec, 1)
 makeToggleRow("Playtime Rewards", "playtimeRewards", spinSec, 2)
 makeDivider(6)
 
-print("[Garden Bee Flyer v1.6] ✓ Loaded successfully!")
-print("[Garden Bee Flyer v1.6] Museum Digpile: Teleport → Prompt → PlayDigVFX → Fast StageReached (0.11s) → CompleteDig")
-print("[Garden Bee Flyer v1.6] Safety hardened - prevents server drops and progress bar resets")
+print("[Garden Bee Flyer v1.10] ✓ Loaded successfully!")
+print("[Garden Bee Flyer v1.10] Museum Digpile: Minimal clicks (1-2) only when slider reaches LEFT CORNER of green zone")
+print("[Garden Bee Flyer v1.10] Maximum efficiency + natural behavior")
