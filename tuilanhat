@@ -294,24 +294,36 @@ local function digPile(pile)
         pcall(function()
             digRemote:FireServer("PlayDigVFX", pile.name)
         end)
-        task.wait(jitter(0.2, 0.1))
         
-        -- Fire StageReached for stages 1-7 (simulates clicking in green zone)
-        for stage = 1, 7 do
+        -- Wait for minigame UI to load and slider to start moving
+        task.wait(jitter(0.8, 0.2))
+        
+        -- SPAM StageReached continuously with better timing
+        -- Slower spam rate (0.25-0.3s) gives slider time to move and increases chance of hitting green zone
+        -- Still rapid enough to fill progress bar, but not so fast we miss the zone
+        local maxAttempts = 50  -- 50 attempts at 0.27s average = ~13.5 seconds of clicking
+        for attempt = 1, maxAttempts do
             if not ENABLED.museumDig then break end
+            
+            -- Cycle through stages 1-7 repeatedly
+            local stage = ((attempt - 1) % 7) + 1
+            
+            -- Fire the stage reached
             pcall(function()
                 digRemote:FireServer("StageReached", pile.name, stage)
             end)
-            task.wait(jitter(0.15, 0.08))  -- Timing between stages with jitter
+            
+            -- Medium delay between clicks (0.24-0.30s) - gives slider time to move and reset position
+            -- Better chance of hitting green zone compared to ultra-rapid spam
+            task.wait(jitter(0.27, 0.03))
         end
         
-        -- Fire CompleteDig to finish and claim reward
-        task.wait(jitter(0.2, 0.1))
+        -- After spamming StageReached many times, fire CompleteDig to finish and claim reward
         pcall(function()
             digRemote:FireServer("CompleteDig", pile.name)
         end)
         
-        task.wait(jitter(1.5, 0.5))  -- Wait for completion and reward animation
+        task.wait(jitter(2, 1))  -- Wait for completion and reward animation
     end
     
     diggingActive = false
